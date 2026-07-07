@@ -11,7 +11,6 @@ const baseUrl =
 
 export const apiBaseUrl = baseUrl;
 export const videosBaseUrl = `${baseUrl}/api/v1/videos`;
-export const uploadBaseUrl = `${baseUrl}/api/v1/upload`;
 
 // Absolute URL for a backend-served media path (e.g. /static/videos/foo.mp4).
 export function mediaUrl(path) {

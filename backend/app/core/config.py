@@ -54,7 +54,6 @@ class Settings(BaseSettings):
     
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
-    UPLOAD_FOLDER: Optional[Path] = Field(default=None)
     STATIC_DIR: Optional[Path] = Field(default=None)
     RESOURCE_DIR: Optional[Path] = Field(default=None)
     
@@ -66,10 +65,7 @@ class Settings(BaseSettings):
     SUBTITLE_OUTPUT_DIR: Optional[Path] = Field(default=None)
     FONT_PATH: Optional[Path] = Field(default=None)
     INTRO_IMAGE_PATH: Optional[Path] = Field(default=None)
-    
-    # File upload limits
-    MAX_UPLOAD_SIZE: int = Field(default=50 * 1024 * 1024, env="MAX_UPLOAD_SIZE")  # 50MB
-    
+
     # Video generation settings
     DEFAULT_VIDEO_DURATION: int = Field(default=60, env="DEFAULT_VIDEO_DURATION")
     DEFAULT_VIDEO_FPS: int = Field(default=24, env="DEFAULT_VIDEO_FPS")
@@ -154,9 +150,6 @@ class Settings(BaseSettings):
         super().__init__(**kwargs)
         
         # Initialize paths after base initialization
-        if self.UPLOAD_FOLDER is None:
-            self.UPLOAD_FOLDER = self.BASE_DIR / "uploads"
-        
         if self.STATIC_DIR is None:
             self.STATIC_DIR = self.BASE_DIR / "static"
 
@@ -202,7 +195,6 @@ class Settings(BaseSettings):
     def ensure_directories(self):
         """Ensure all required directories exist"""
         directories = [
-            self.UPLOAD_FOLDER,
             self.STATIC_DIR / "videos",
             self.RESOURCE_DIR,
             self.SCRIPT_DIR,

@@ -62,13 +62,49 @@ A render runs as a background task, **serialized by a lock** (one render at a ti
 
 > Heavy ML deps (torch, MoviePy, Kokoro) are **lazy-imported** inside the render task, so the API/health/trends endpoints stay light at boot.
 
-### Trending pipeline ([trends_service.py](backend/app/services/trends_service.py), [trends_scheduler.py](backend/app/services/trends_scheduler.py))
-- Fetches the configured ET RSS feeds (`feedparser`)
-- Ranks by `0.45·recency + 0.55·cross-feed keyword overlap`, skips stale/already-processed
-- An **APScheduler** job auto-generates the top N on an interval (disabled by default)
-
 ### Frontend ([frontend/](frontend/))
 React 19 + Vite + Tailwind. Dev proxies `/api` and `/static` to the backend; prod uses `VITE_API_BASE_URL`.
+
+---
+
+## Trending pipeline (Economic Times → auto-published video)
+
+An **APScheduler cron job** runs every `TRENDS_INTERVAL_HOURS` (default 6h) and does the following, unattended ([trends_scheduler.py](backend/app/services/trends_scheduler.py), [trends_service.py](backend/app/services/trends_service.py)):
+
+```
+   cron tick ─▶ scan ET RSS feeds ─▶ rank articles ─▶ take top N
+                                                        │
+                     dedup (skip already-processed) ◀───┤
+                                                        ▼
+                         for each: script → images → audio → subtitles
+                                   → assemble → thumbnail → AUTO-PUBLISH (YouTube)
+                                                        │
+                                   mark article link as processed
+```
+
+1. **Scan** — fetches every feed in `TRENDS_FEED_URLS` with `feedparser`, normalizes each entry (title, summary, link, source, published time), and de-duplicates by link.
+2. **Rank** — scores each fresh article (see below) and sorts descending.
+3. **Select** — takes the top `TRENDS_TOP_N` articles, skipping any whose link is already in `resources/trends_state.json`.
+4. **Generate** — runs each through the normal render pipeline (serialized, one at a time), using the headline as the topic and the article's salient keywords as key points.
+5. **Publish** — if `TRENDS_AUTO_PUBLISH=true`, uploads each finished video to YouTube.
+6. **Dedup** — records processed links so the same story is never regenerated.
+
+It's **off by default** — set `TRENDS_ENABLED=true` to start the scheduler. You can also preview the ranking (`GET /trends/preview`) or trigger a run on demand (`POST /trends/run`).
+
+### Ranking logic
+
+Free, deterministic — no LLM/API cost. Each candidate article gets a score in `[0, 1]`:
+
+```
+score = 0.45 · recency  +  0.55 · trend
+```
+
+- **`recency`** — how fresh the article is, linearly decayed over `TRENDS_MAX_AGE_HOURS` (default 24h):
+  `recency = max(0, 1 − age / max_age)`. Just-published → 1.0; at/over the max age → 0.0; unknown publish date → neutral 0.5. Articles older than `max_age` are dropped entirely.
+
+- **`trend`** — cross-feed momentum: a story surfacing across *many* articles/feeds is "trending". Each article's title + summary is tokenized (lowercased, stop-words and short tokens removed). For every unique keyword, its **document frequency** `df` (how many candidate articles contain it) is computed. An article's raw trend is `Σ (df − 1)` over its unique keywords — i.e. it scores for every *other* article that shares its keywords. This is then normalized to `[0, 1]` by the highest raw value in the batch.
+
+The weights (`0.45` / `0.55`) and the tokenizer/stop-words live at the top of [trends_service.py](backend/app/services/trends_service.py). The result is that **recent stories echoed across multiple ET sections rank highest** — exactly the ones worth turning into a short.
 
 ---
 
@@ -164,7 +200,6 @@ Base path: `/api/v1`
 | `GET` | `/videos/list` | List finished videos (+ thumbnails) |
 | `GET` | `/videos/download/{name}` · `/videos/stream/{name}` | Download / stream an MP4 |
 | `DELETE` | `/videos/{name}` | Delete a video + its thumbnail |
-| `POST` | `/upload/file` | Upload a source document |
 | `GET` | `/trends/status` · `/trends/preview` | Scheduler status / ranked trending articles |
 | `POST` | `/trends/run` | Trigger one trending run now |
 | `GET` | `/health` | Health check |

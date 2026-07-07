@@ -21,11 +21,6 @@ google-auth
 google-auth-oauthlib
 google-auth-httplib2
 
-# Document Processing
-pymupdf
-python-pptx
-werkzeug
-
 # Video Processing
 opencv-python-headless
 moviepy

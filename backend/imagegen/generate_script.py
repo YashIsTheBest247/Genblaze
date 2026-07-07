@@ -23,26 +23,6 @@ class VideoScriptGenerator:
         # Only create the Gemini client when actually using Gemini.
         self.client = genai.Client(api_key=api_key) if self.provider == "gemini" else None
 
-        self.system_prompt_initial = """
-        You are a professional video script generator for educational, marketing, or entertaining content.  
-        Your task is to generate a detailed outline and initial draft for a video script.
-        Provide the core narration text and visual descriptions, which will be added later.
-        Visual Description should not contain animations, moving images, transitions, or video effects description.
-        Output a JSON structure with these keys, but *without timestamps, speed, pitch, or detailed visual parameters* (these will be added in a later stage):
-
-        {
-            "topic": "Topic Name",
-            "overall_narrative": "A concise summary of the entire video's storyline.",
-            "key_sections": [
-                {
-                    "section_title": "Descriptive title for this section",
-                    "narration_text": "The complete text to be spoken in this section.",
-                    "visual_description": "A general description of the visuals for this section."
-                }
-            ]
-        }
-        """
-
         self.system_prompt_segmentation = """
         You are a professional video script segmenter.  
         Your task is to take an existing video script draft and break it down into precise, timestamped segments for both audio and visuals, adhering to strict formatting and parameter guidelines.
@@ -271,14 +251,6 @@ class VideoScriptGenerator:
 
         return script
 
-    def refine_script(self, existing_script: Dict, feedback: str) -> Dict:
-        prompt = f"""Refine this script based on feedback:
-        Existing Script: {json.dumps(existing_script, indent=2)}
-        Feedback: {feedback}
-        """
-        raw_output = self._generate_content(prompt, self.system_prompt_segmentation)
-        return self._extract_json(raw_output)
-    
     def save_script(self, script: Dict, filename: str) -> None:
         with open(filename, 'w') as f:
             json.dump(script, f, indent=2)

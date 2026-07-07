@@ -121,11 +121,3 @@ def main_generate_audio(
     
     print(f"Audio generation complete! Generated {len(audio_files)} files in {audio_path}")
     return audio_files
-
-
-# Backward compatibility wrapper
-def main_generate_audio_legacy(script_path: str, audio_path: str):
-    """
-    Legacy function signature for backward compatibility.
-    """
-    return main_generate_audio(Path(script_path), Path(audio_path))

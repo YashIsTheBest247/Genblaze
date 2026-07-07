@@ -5,7 +5,6 @@ Fallback: Google Gemini image generation (used only when Pexels has no match).
 All paths are passed as parameters - no hardcoded paths.
 """
 import json
-import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -229,22 +228,3 @@ def main_generate_images(
 
     print(f"Image sourcing completed. {success_count}/{len(data['visual_script'])} images obtained.")
     return success_count > 0
-
-
-# Backward compatibility wrapper
-def main_generate_images_legacy(script_path: str, images_output_path: str):
-    """Legacy signature: loads API keys from environment."""
-    from dotenv import load_dotenv
-    load_dotenv()
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
-    pexels_api_key = os.getenv("PEXELS_API_KEY", "")
-
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY not found in environment variables")
-
-    return main_generate_images(
-        Path(script_path),
-        Path(images_output_path),
-        gemini_api_key=gemini_api_key,
-        pexels_api_key=pexels_api_key,
-    )
