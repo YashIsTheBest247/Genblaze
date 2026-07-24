@@ -182,13 +182,13 @@ export function AutomationSection({ onGenerate, onRunAutomation, isGenerating })
                             role="switch"
                             aria-checked={autoPublish}
                             onClick={() => setAutoPublish((v) => !v)}
-                            className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors ${
-                                autoPublish ? 'border-accent bg-accent' : 'border-tint/25 bg-tint/15'
+                            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+                                autoPublish ? 'bg-accent' : 'bg-tint/25'
                             }`}
                         >
                             <span
-                                className={`absolute top-0.5 h-5 w-5 rounded-full shadow transition-transform ${
-                                    autoPublish ? 'translate-x-[22px] bg-panel' : 'translate-x-0.5 bg-txt'
+                                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full shadow transition-transform duration-200 ${
+                                    autoPublish ? 'translate-x-5 bg-panel' : 'translate-x-0 bg-txt'
                                 }`}
                             />
                         </button>

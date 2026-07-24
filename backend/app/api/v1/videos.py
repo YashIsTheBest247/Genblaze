@@ -61,29 +61,41 @@ async def render_status():
 @router.get("/list", response_model=List[VideoListResponse])
 async def list_videos():
     """
-    List all generated videos in the static/videos directory
+    List generated videos, NEWEST FIRST (so a fresh render appears at the top
+    of the library instead of being buried in os.listdir order).
     """
     try:
         video_dir = settings.STATIC_DIR / "videos"
-        
+
         if not video_dir.exists():
             return []
-        
-        videos = []
+
+        entries = []
         for filename in os.listdir(video_dir):
             if filename.lower().endswith(('.mp4', '.webm', '.ogg', '.mov', '.avi')):
-                stem = os.path.splitext(filename)[0]
-                thumb_name = f"{stem}.jpg"
-                thumbnail = (
-                    f"/static/videos/{thumb_name}"
-                    if (video_dir / thumb_name).exists()
-                    else None
-                )
-                videos.append(VideoListResponse(
-                    name=filename,
-                    path=f"/static/videos/{filename}",
-                    thumbnail=thumbnail,
-                ))
+                file_path = video_dir / filename
+                try:
+                    mtime = file_path.stat().st_mtime
+                except OSError:
+                    mtime = 0
+                entries.append((mtime, filename))
+
+        # Most recently created/modified first.
+        entries.sort(key=lambda item: item[0], reverse=True)
+
+        videos = []
+        for _, filename in entries:
+            thumb_name = f"{os.path.splitext(filename)[0]}.jpg"
+            thumbnail = (
+                f"/static/videos/{thumb_name}"
+                if (video_dir / thumb_name).exists()
+                else None
+            )
+            videos.append(VideoListResponse(
+                name=filename,
+                path=f"/static/videos/{filename}",
+                thumbnail=thumbnail,
+            ))
 
         return videos
         

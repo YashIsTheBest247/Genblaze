@@ -1,0 +1,52 @@
+1
+00:00:02,000 --> 00:00:05,971
+Wall Street opened today with a subdued performance, as investors
+
+2
+00:00:05,971 --> 00:00:09,943
+reacted to a recent tech-led selloff. The major indices showed
+
+3
+00:00:09,943 --> 00:00:11,930
+a mixed picture early on.
+
+4
+00:00:11,930 --> 00:00:16,698
+The Dow Jones Industrial Average managed to inch slightly higher,
+
+5
+00:00:16,698 --> 00:00:19,560
+indicating some resilience in traditional sectors.
+
+6
+00:00:19,560 --> 00:00:25,049
+However, the S&P 500 and Nasdaq Composite both experienced slight
+
+7
+00:00:25,049 --> 00:00:29,990
+dips, reflecting continued caution, especially within the technology sector.
+
+8
+00:00:29,990 --> 00:00:34,378
+Beyond market fundamentals, investors are also grappling with renewed geopolitical
+
+9
+00:00:34,378 --> 00:00:38,767
+tensions in the Middle East and the implications of new
+
+10
+00:00:38,767 --> 00:00:41,839
+Trump tariffs. These factors are closely watched.
+
+11
+00:00:41,839 --> 00:00:46,753
+Concerns over rising oil prices and persistent inflation continue to
+
+12
+00:00:46,753 --> 00:00:51,666
+influence overall market sentiment, adding layers of complexity to the
+
+13
+00:00:51,666 --> 00:00:53,139
+current economic outlook.
+
