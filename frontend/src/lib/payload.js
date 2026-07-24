@@ -1,5 +1,5 @@
 // Convert the creator form state into the backend VideoGenerationRequest shape.
-export function buildVideoPayload({ topic, duration, keyPoints, format, autoPublish, privacy }) {
+export function buildVideoPayload({ topic, duration, keyPoints, autoPublish, privacy }) {
     const points = (keyPoints || '')
         .split(/\r?\n|,/)
         .map((line) => line.trim())
@@ -9,7 +9,7 @@ export function buildVideoPayload({ topic, duration, keyPoints, format, autoPubl
         topic: topic.trim(),
         duration: Number(duration) || 60,
         key_points: points,
-        style: format === 'podcast' ? 'podcast' : 'educational',
+        style: 'educational',
         publish_to_youtube: Boolean(autoPublish),
         privacy_status: privacy === 'public' ? 'public' : 'unlisted',
     };

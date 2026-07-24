@@ -18,6 +18,32 @@ from PIL import Image, ImageDraw, ImageFont
 TARGET_W = int(os.environ.get("FLUX_VIDEO_WIDTH", "480"))
 TARGET_H = int(os.environ.get("FLUX_VIDEO_HEIGHT", "854"))
 
+# Text sizes scale with the output width so captions/titles never overflow or get
+# clipped, whatever the resolution (480p -> 1080p).
+SUBTITLE_BOX_W = int(TARGET_W * 0.90)
+SUBTITLE_FONT_SIZE = max(14, int(TARGET_W * 0.055))
+TITLE_FONT_SIZE = max(18, int(TARGET_W * 0.075))
+
+
+def make_subtitle_clip(text: str, font_path):
+    """
+    Build a caption clip sized relative to the output width.
+
+    Height is auto (None) so long lines wrap and grow downward instead of being
+    cut off, and the box always fits inside the frame.
+    """
+    return TextClip(
+        text=text,
+        font=str(font_path),
+        color='white',
+        bg_color='black',
+        size=(SUBTITLE_BOX_W, None),
+        font_size=SUBTITLE_FONT_SIZE,
+        method='caption',
+        text_align="center",
+        horizontal_align="center",
+    )
+
 
 def fit_to_frame(clip, target_w: int = TARGET_W, target_h: int = TARGET_H):
     """Scale a clip to COVER the target frame, then center-crop to exact size.
@@ -185,7 +211,7 @@ def create_intro_clip(
         # Create text clip (wrapped to the frame width, large for mobile)
         text_clip = TextClip(
             text=topic,
-            font_size=72,
+            font_size=TITLE_FONT_SIZE,
             color='white',
             font=str(font_path),
             stroke_color='black',
@@ -208,7 +234,7 @@ def create_intro_clip(
         from moviepy import ColorClip
         fallback_clip = ColorClip(size=(TARGET_W, TARGET_H), color=(0, 0, 0), duration=duration)
         text_clip = TextClip(
-            text=topic, font_size=60, color='white', font=str(font_path),
+            text=topic, font_size=TITLE_FONT_SIZE, color='white', font=str(font_path),
             method='caption', size=(int(TARGET_W * 0.9), None), text_align='center',
         ).with_position('center').with_duration(duration)
         return CompositeVideoClip([fallback_clip, text_clip], size=(TARGET_W, TARGET_H))
@@ -366,31 +392,21 @@ def create_video(
                 for i in range(0, len(words), chunk_size):
                     chunk = " ".join(words[i:i + chunk_size])
                     chunk_duration = duration * (len(chunk.split()) / len(words))
-                    subtitle_clip = TextClip(
-                        text=chunk,
-                        font=str(font_path),
-                        color='white',
-                        bg_color='black',
-                        size=(int(TARGET_W * 0.92), 280),
-                        font_size=52,
-                        method='caption',
-                        text_align="center",
-                        horizontal_align="center"
-                    ).with_duration(chunk_duration).with_start(Start_duration).with_position(('center', 0.72), relative=True)
+                    subtitle_clip = (
+                        make_subtitle_clip(chunk, font_path)
+                        .with_duration(chunk_duration)
+                        .with_start(Start_duration)
+                        .with_position(('center', 0.72), relative=True)
+                    )
                     subtitle_clips.append(subtitle_clip)
                     Start_duration += chunk_duration
             else:
-                subtitle_clip = TextClip(
-                    text=text,
-                    font=str(font_path),
-                    color='white',
-                    bg_color='black',
-                    size=(1280, 150),
-                    font_size=28,
-                    method='caption',
-                    text_align="center",
-                    horizontal_align="center"
-                ).with_duration(duration).with_start(Start_duration).with_position(('center', 0.72), relative=True)
+                subtitle_clip = (
+                    make_subtitle_clip(text, font_path)
+                    .with_duration(duration)
+                    .with_start(Start_duration)
+                    .with_position(('center', 0.72), relative=True)
+                )
                 subtitle_clips.append(subtitle_clip)
                 Start_duration += duration
         subtitle_clips.insert(0, video)

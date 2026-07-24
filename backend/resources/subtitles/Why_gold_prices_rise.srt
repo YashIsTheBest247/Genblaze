@@ -1,0 +1,16 @@
+1
+00:00:02,000 --> 00:00:06,484
+Gold prices often rise due to inflation, as investors seek
+
+2
+00:00:06,484 --> 00:00:07,830
+to preserve wealth.
+
+3
+00:00:07,830 --> 00:00:12,583
+It's also a safe haven during economic uncertainty, increasing demand.
+
+4
+00:00:12,583 --> 00:00:14,959
+This drives its value up.
+

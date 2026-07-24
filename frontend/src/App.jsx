@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Header } from './components/Header.jsx';
 import { Hero } from './components/Hero.jsx';
-import { CreatorPanel } from './components/CreatorPanel.jsx';
-import { TrendingSection } from './components/TrendingSection.jsx';
+import { AutomationSection } from './components/AutomationSection.jsx';
 import { PipelineSection } from './components/PipelineSection.jsx';
 import { LibrarySection } from './components/LibrarySection.jsx';
 import { DevFooter } from './components/DevFooter.jsx';
 import { ConfirmDialog } from './components/ConfirmDialog.jsx';
+import { VideoPlayerModal } from './components/VideoPlayerModal.jsx';
 import { pipelineSteps } from './data/options.js';
 import { buildVideoPayload } from './lib/payload.js';
-import { generateVideo, listVideos, deleteVideo } from './api/videos.js';
+import { generateVideo, listVideos, deleteVideo, getRenderStatus } from './api/videos.js';
+import { runAutomation } from './api/trends.js';
 
 const idlePipeline = {
     mode: 'idle',
@@ -25,9 +26,9 @@ export function App() {
     const [searchQuery, setSearchQuery] = useState('');
     const [newFilename, setNewFilename] = useState(null);
     const [pendingDelete, setPendingDelete] = useState(null);
+    const [playingVideo, setPlayingVideo] = useState(null);
 
     const pollTimerRef = useRef(null);
-    const stepTimerRef = useRef(null);
     const generatingRef = useRef(false);
 
     const refreshLibrary = useCallback(async () => {
@@ -42,19 +43,25 @@ export function App() {
     }, []);
 
     useEffect(() => {
-        void refreshLibrary();
+        (async () => {
+            const current = await refreshLibrary();
+            // If a render is already running server-side (e.g. the page was
+            // refreshed, or the scheduler fired), re-attach to it.
+            try {
+                const status = await getRenderStatus();
+                if (status?.active) {
+                    const resumed = pipelineFromStage(status.stage);
+                    if (resumed) setPipeline(resumed);
+                    startRenderWatch(new Set(current.map((video) => video.name)));
+                }
+            } catch {
+                // backend not reachable yet — ignore
+            }
+        })();
         return () => {
             if (pollTimerRef.current) window.clearInterval(pollTimerRef.current);
-            if (stepTimerRef.current) window.clearTimeout(stepTimerRef.current);
         };
     }, [refreshLibrary]);
-
-    function clearStepTimer() {
-        if (stepTimerRef.current) {
-            window.clearTimeout(stepTimerRef.current);
-            stepTimerRef.current = null;
-        }
-    }
 
     function clearPollTimer() {
         if (pollTimerRef.current) {
@@ -63,49 +70,91 @@ export function App() {
         }
     }
 
-    function runPipelineStep(stepIndex) {
-        clearStepTimer();
-        const step = pipelineSteps[stepIndex];
-        if (!step) return;
-
-        setPipeline({ mode: 'running', activeStepKey: step.key, statusText: step.statusText });
-
-        if (stepIndex < pipelineSteps.length - 1) {
-            stepTimerRef.current = window.setTimeout(() => {
-                runPipelineStep(stepIndex + 1);
-            }, step.durationMs);
-        }
-    }
-
     function completePipeline() {
-        clearStepTimer();
         clearPollTimer();
         setIsPolling(false);
         setPipeline({ mode: 'complete', activeStepKey: null, statusText: 'Video ready' });
         scrollToSection('library');
     }
 
-    function startPolling(filename) {
+    // Map a backend stage key onto the visual pipeline state.
+    function pipelineFromStage(stage) {
+        if (!stage || stage === 'done') return null;
+        const step = pipelineSteps.find((s) => s.key === stage);
+        if (!step) return null;
+        return { mode: 'running', activeStepKey: step.key, statusText: step.statusText };
+    }
+
+    /**
+     * Watch a render: reflect the REAL backend stage in the pipeline, and finish
+     * when a video that wasn't in `baselineNames` shows up in the library.
+     */
+    function startRenderWatch(baselineNames, maxAttempts = 240) {
         clearPollTimer();
         setIsPolling(true);
         let attempts = 0;
+        let idleTicks = 0; // consecutive polls where the backend reports nothing running
+
+        function stopWatch(nextPipeline) {
+            clearPollTimer();
+            setIsPolling(false);
+            setPipeline(nextPipeline);
+        }
 
         pollTimerRef.current = window.setInterval(async () => {
             attempts += 1;
-            const refreshed = await refreshLibrary();
-            const ready = filename ? refreshed.some((video) => video.name === filename) : false;
 
-            if (ready) {
+            let status = null;
+            try {
+                status = await getRenderStatus();
+                if (status?.stage === 'error') {
+                    stopWatch({
+                        mode: 'error',
+                        activeStepKey: null,
+                        statusText: status.error || 'Render failed',
+                    });
+                    return;
+                }
+                const next = pipelineFromStage(status?.stage);
+                if (next) setPipeline(next);
+            } catch {
+                // transient status error — keep watching
+            }
+
+            const refreshed = await refreshLibrary();
+            const fresh = refreshed.find((video) => !baselineNames.has(video.name));
+
+            // Finish only once the backend reports the WHOLE render is done —
+            // 'done' is set after the publish step, so we don't jump to the
+            // library while the YouTube upload is still running.
+            if (status?.stage === 'done' || (fresh && status?.active === false)) {
+                if (fresh) setNewFilename(fresh.name);
                 completePipeline();
                 return;
             }
 
-            if (attempts >= 24) {
-                clearPollTimer();
-                setIsPolling(false);
-                setPipeline(idlePipeline);
+            // Nothing is running server-side and no new video arrived. This happens
+            // if the backend restarted mid-render (status is in-memory) or the run
+            // ended without output — don't spin for minutes, bail out with a reason.
+            const backendIdle = status && status.active === false && !status.stage;
+            idleTicks = backendIdle ? idleTicks + 1 : 0;
+            if (idleTicks >= 3) {
+                stopWatch({
+                    mode: 'error',
+                    activeStepKey: null,
+                    statusText: 'Render stopped — no video was produced',
+                });
+                return;
             }
-        }, 5000);
+
+            if (attempts >= maxAttempts) {
+                stopWatch({
+                    mode: 'error',
+                    activeStepKey: null,
+                    statusText: 'Timed out waiting for the render',
+                });
+            }
+        }, 2500);
     }
 
     async function confirmDelete() {
@@ -122,54 +171,63 @@ export function App() {
     }
 
     function handleGenerateFromArticle(article) {
-        // Build the same shape CreatorPanel produces, from a trending headline.
         handleGenerate({
             topic: article.title,
             duration: 60,
             keyPoints: (article.keywords ?? []).join(', '),
-            format: 'video',
             autoPublish: true,
             privacy: 'unlisted',
         }).catch((error) => {
-            // handleGenerate rethrows (e.g. "already in progress"); surface gently.
             window.alert(error.message || 'Could not start generation.');
         });
     }
 
-    async function handleGenerate(formValues) {
-        // Always take the user to the live pipeline when they hit generate
-        // (even if a render is already running, so they can watch it).
+    /** Shared setup for any render trigger: scroll to pipeline, guard, baseline. */
+    async function beginRender() {
+        // Always take the user to the live pipeline (even if one is running).
         scrollToSection('pipeline');
 
-        // Guard against double-submit (rapid clicks / Enter+click) firing two renders.
         if (generatingRef.current || isGenerating || isPolling) {
             throw new Error('A render is already in progress. Please wait for it to finish.');
         }
         generatingRef.current = true;
-
         setIsGenerating(true);
         setNewFilename(null);
-        runPipelineStep(0);
+        setPipeline({ mode: 'running', activeStepKey: 'fetch', statusText: 'Starting render…' });
 
+        const current = await refreshLibrary();
+        return new Set(current.map((video) => video.name));
+    }
+
+    function failRender(message) {
+        setPipeline({ mode: 'error', activeStepKey: null, statusText: message });
+    }
+
+    async function handleGenerate(formValues) {
+        const baseline = await beginRender();
         try {
-            const payload = buildVideoPayload(formValues);
-            const response = await generateVideo(payload);
-
+            const response = await generateVideo(buildVideoPayload(formValues));
             if (response?.success === false) {
                 throw new Error(response.error || response.message || 'Generation failed.');
             }
-
-            const filename = response.video_filename ?? null;
-            setNewFilename(filename);
-            await refreshLibrary();
-            startPolling(filename);
+            startRenderWatch(baseline);
         } catch (error) {
-            clearStepTimer();
-            setPipeline({
-                mode: 'error',
-                activeStepKey: null,
-                statusText: 'Render request failed',
-            });
+            failRender('Render request failed');
+            throw error;
+        } finally {
+            setIsGenerating(false);
+            generatingRef.current = false;
+        }
+    }
+
+    /** "Run Automation": backend picks the top-N trending articles and renders them. */
+    async function handleRunAutomation({ topN = 1, autoPublish = false } = {}) {
+        const baseline = await beginRender();
+        try {
+            await runAutomation({ topN, autoPublish });
+            startRenderWatch(baseline);
+        } catch (error) {
+            failRender('Automation request failed');
             throw error;
         } finally {
             setIsGenerating(false);
@@ -187,15 +245,19 @@ export function App() {
 
     return (
         <div className="flex min-h-screen flex-col">
-            <Header onNavigate={scrollToSection} />
+            <Header
+                onNavigate={scrollToSection}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+            />
             <main className="flex-1">
                 <Hero
-                    onOpenApp={() => scrollToSection('creator')}
-                    onDiscover={() => scrollToSection('pipeline')}
+                    onStartAutomation={() => scrollToSection('automation')}
+                    onViewLibrary={() => scrollToSection('library')}
                 />
-                <CreatorPanel onGenerate={handleGenerate} isGenerating={isGenerating} />
-                <TrendingSection
+                <AutomationSection
                     onGenerate={handleGenerateFromArticle}
+                    onRunAutomation={handleRunAutomation}
                     isGenerating={isGenerating || isPolling}
                 />
                 <PipelineSection
@@ -206,11 +268,11 @@ export function App() {
                 <LibrarySection
                     videos={videos}
                     searchQuery={searchQuery}
-                    onSearchChange={setSearchQuery}
                     isGenerating={isGenerating}
                     isPolling={isPolling}
                     newFilename={newFilename}
                     onRequestDelete={setPendingDelete}
+                    onPlay={setPlayingVideo}
                 />
             </main>
             <DevFooter />
@@ -226,6 +288,7 @@ export function App() {
                 onConfirm={confirmDelete}
                 onCancel={() => setPendingDelete(null)}
             />
+            <VideoPlayerModal video={playingVideo} onClose={() => setPlayingVideo(null)} />
         </div>
     );
 }

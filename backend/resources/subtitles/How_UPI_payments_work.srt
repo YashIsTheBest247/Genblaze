@@ -1,0 +1,56 @@
+1
+00:00:02,000 --> 00:00:07,054
+UPI, or Unified Payments Interface, has revolutionized digital transactions in
+
+2
+00:00:07,054 --> 00:00:12,108
+India. It's a system that powers multiple bank accounts into
+
+3
+00:00:12,108 --> 00:00:14,130
+a single mobile application.
+
+4
+00:00:14,130 --> 00:00:18,588
+The magic of UPI lies in its instant transfer capability.
+
+5
+00:00:18,588 --> 00:00:23,046
+Unlike traditional methods, funds move directly from one bank account
+
+6
+00:00:23,046 --> 00:00:24,830
+to another in real-time.
+
+7
+00:00:24,830 --> 00:00:28,367
+This means you can send or receive money instantly, any
+
+8
+00:00:28,367 --> 00:00:31,904
+time of the day, even on holidays. All you need
+
+9
+00:00:31,904 --> 00:00:34,380
+is a smartphone and a UPI ID.
+
+10
+00:00:34,380 --> 00:00:38,820
+When you initiate a payment, your bank verifies your UPI
+
+11
+00:00:38,820 --> 00:00:43,260
+PIN and then securely communicates with the recipient's bank. The
+
+12
+00:00:43,260 --> 00:00:45,480
+transaction is processed almost instantly.
+
+13
+00:00:45,480 --> 00:00:50,024
+It's a seamless, secure, and incredibly efficient way to handle
+
+14
+00:00:50,024 --> 00:00:53,660
+your money, making digital payments accessible to everyone.
+

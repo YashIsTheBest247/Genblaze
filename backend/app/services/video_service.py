@@ -31,6 +31,26 @@ logger = logging.getLogger(__name__)
 # serializes every render (manual + trending) to one at a time.
 _render_lock = threading.Lock()
 
+# Live render status so the UI can show which pipeline stage is actually running.
+# Stage keys match the frontend's pipelineSteps: fetch, trend, script, image,
+# voice, subtitles, assembly, publish.
+render_status = {
+    "active": False,
+    "stage": None,
+    "topic": None,
+    "video_filename": None,
+    "error": None,
+    "updated_at": None,
+}
+
+
+def set_stage(stage: Optional[str], **extra) -> None:
+    """Record the current pipeline stage (safe to call from any thread)."""
+    render_status["stage"] = stage
+    render_status["updated_at"] = time.time()
+    for key, value in extra.items():
+        render_status[key] = value
+
 
 class VideoGenerationService:
     """Service for generating videos"""
@@ -116,6 +136,11 @@ class VideoGenerationService:
         """
         try:
             logger.info(f"Starting video generation for: {request.topic}")
+            render_status.update(
+                {"active": True, "error": None, "topic": request.topic,
+                 "video_filename": video_filename}
+            )
+            set_stage("script")
 
             # Lazy imports: load the heavy pipeline only when actually rendering.
             from imagegen.gen_img import main_generate_images
@@ -159,27 +184,21 @@ class VideoGenerationService:
             self.script_generator.save_script(script, str(script_path))
             logger.info(f"Script saved to: {script_path}")
             
-            # Step 3: Source images.
-            # Podcast = one cover image held for the whole episode.
-            # Video   = a distinct image per scene (Pexels -> Gemini fallback).
-            is_podcast = (request.style or "").lower() == "podcast"
-            if is_podcast:
-                logger.info("Generating podcast cover...")
-                self._generate_podcast_cover(script_path, settings.IMAGES_DIR)
-            else:
-                logger.info("Generating images...")
-                main_generate_images(
-                    script_path=script_path,
-                    images_output_path=settings.IMAGES_DIR,
-                    gemini_api_key=settings.GEMINI_API_KEY,
-                    pexels_api_key=settings.PEXELS_API_KEY,
-                    delay_seconds=settings.IMAGE_GEN_DELAY,
-                    gemini_model=settings.IMAGE_GEN_MODEL,
-                    aspect_ratio=settings.IMAGE_ASPECT_RATIO,
-                )
+            # Step 3: Source a distinct image per scene (Pexels -> Gemini fallback).
+            set_stage("image")
+            logger.info("Generating images...")
+            main_generate_images(
+                script_path=script_path,
+                images_output_path=settings.IMAGES_DIR,
+                gemini_api_key=settings.GEMINI_API_KEY,
+                pexels_api_key=settings.PEXELS_API_KEY,
+                gemini_model=settings.IMAGE_GEN_MODEL,
+                aspect_ratio=settings.IMAGE_ASPECT_RATIO,
+            )
             logger.info("Images generated successfully")
             
             # Step 4: Generate audio
+            set_stage("voice")
             logger.info("Generating audio...")
             main_generate_audio(
                 script_path=script_path,
@@ -188,6 +207,7 @@ class VideoGenerationService:
             logger.info("Audio generated successfully")
             
             # Step 5: Generate subtitles
+            set_stage("subtitles")
             logger.info("Generating subtitles...")
             clean_topic = re.sub(r"[^A-Za-z0-9]", "_", request.topic)[:30]
             srt_path = settings.SUBTITLE_OUTPUT_DIR / f"{clean_topic}.srt"
@@ -201,6 +221,7 @@ class VideoGenerationService:
             logger.info(f"Subtitles saved to: {srt_path}")
             
             # Step 6: Assemble video
+            set_stage("assembly")
             logger.info("Assembling video...")
             temp_video_path = settings.VIDEO_OUTPUT_DIR / video_filename
             
@@ -230,45 +251,17 @@ class VideoGenerationService:
             # Step 8: Auto-publish to YouTube when the per-render flag is set OR
             # the global YOUTUBE_AUTO_UPLOAD setting is enabled.
             if request.publish_to_youtube or settings.YOUTUBE_AUTO_UPLOAD:
+                set_stage("publish")
                 self._publish_to_youtube(request, final_video_path)
+
+            set_stage("done")
 
         except Exception as e:
             logger.error(f"Video generation task failed: {str(e)}", exc_info=True)
+            set_stage("error", error=str(e))
             raise
-
-    def _generate_podcast_cover(self, script_path: Path, images_dir: Path):
-        """
-        Podcast mode: source ONE cover image and hold it for every audio segment
-        (so the existing assembler produces a single-cover episode with subtitles).
-        """
-        from imagegen.gen_img import get_image_for_prompt, save_image
-
-        images_dir.mkdir(parents=True, exist_ok=True)
-        with open(script_path, "r", encoding="utf-8") as f:
-            script = json.load(f)
-
-        segments = script.get("audio_script", []) or []
-        count = max(1, len(segments))
-
-        # Prefer a real cover prompt; fall back to the topic.
-        visual = script.get("visual_script") or []
-        cover_prompt = (visual[0].get("prompt") if visual else None) or script.get("topic", "")
-
-        image_bytes = get_image_for_prompt(
-            cover_prompt,
-            pexels_api_key=settings.PEXELS_API_KEY,
-            gemini_api_key=settings.GEMINI_API_KEY,
-            aspect_ratio=settings.IMAGE_ASPECT_RATIO,
-            gemini_model=settings.IMAGE_GEN_MODEL,
-        )
-        if not image_bytes:
-            logger.warning("No cover image found for podcast; assembler will use a placeholder.")
-            return
-
-        # Save the cover once per segment so it stays on screen the whole episode.
-        for idx in range(count):
-            save_image(image_bytes, images_dir / f"scene_{idx:03d}.jpg")
-        logger.info(f"Podcast cover applied across {count} segment(s).")
+        finally:
+            render_status["active"] = False
 
     def _generate_thumbnail(self, video_path: Path) -> Optional[Path]:
         """

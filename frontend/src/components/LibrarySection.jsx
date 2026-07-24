@@ -4,13 +4,13 @@ import { titleFromFilename } from '../lib/payload.js';
 export function LibrarySection({
     videos,
     searchQuery,
-    onSearchChange,
     isGenerating,
     isPolling,
     newFilename,
     onRequestDelete,
+    onPlay,
 }) {
-    const query = searchQuery.trim().toLowerCase();
+    const query = (searchQuery || '').trim().toLowerCase();
     const filtered = query
         ? videos.filter(
               (video) =>
@@ -22,55 +22,59 @@ export function LibrarySection({
     const showAwaiting = isGenerating || isPolling;
 
     return (
-        <section id="library" className="mx-auto max-w-7xl px-5 py-12 lg:px-8">
-            <div className="mb-10 flex flex-wrap items-end justify-between gap-4">
-                <div>
-                    <span className="eyebrow">Output</span>
-                    <h2 className="display mt-2 text-3xl font-semibold sm:text-4xl">Library</h2>
-                </div>
-                <div className="flex items-center gap-4">
-                    <span className="chip">
-                        {filtered.length} {filtered.length === 1 ? 'render' : 'renders'}
-                    </span>
-                    <input
-                        type="search"
-                        value={searchQuery}
-                        onChange={(event) => onSearchChange(event.target.value)}
-                        placeholder="Search library…"
-                        className="field-input w-48 rounded-full py-2 text-sm"
-                    />
-                </div>
+        <section id="library" className="mx-auto w-full max-w-[1600px] px-5 py-14 lg:px-8">
+            <div className="mb-2 flex items-center gap-3">
+                <span className="grid h-8 w-8 place-items-center rounded-lg border border-tint/15 bg-tint/[0.06]">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="h-4 w-4" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="3" y="5" width="18" height="14" rx="2" />
+                        <path d="m10 9 5 3-5 3z" />
+                    </svg>
+                </span>
+                <h2 className="display text-2xl font-bold tracking-tight sm:text-3xl">
+                    Generated News Videos
+                </h2>
             </div>
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">
+                AI-generated videos from Economic Times articles appear here automatically
+            </p>
 
-            {filtered.length === 0 && !showAwaiting ? (
-                <div className="glass grid place-items-center p-14 text-center">
-                    <p className="display text-2xl font-semibold text-txt">No renders yet</p>
-                    <p className="mt-2 text-sm text-muted">
-                        {query
-                            ? 'Nothing matches that search.'
-                            : 'Generate your first video from the creator above.'}
-                    </p>
-                </div>
-            ) : (
-                <div className="flex flex-wrap justify-center gap-6 sm:justify-start">
-                    {showAwaiting && (
-                        <article className="glass flex h-[5cm] w-[3cm] flex-col items-center justify-center gap-2 p-3 text-center">
-                            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" />
-                            <p className="display text-sm font-semibold text-txt">Rendering</p>
-                            <p className="text-[0.6rem] text-muted">Appears here when ready</p>
-                        </article>
-                    )}
-                    {filtered.map((video, index) => (
-                        <VideoCard
-                            key={video.name}
-                            index={index}
-                            video={video}
-                            isNew={video.name === newFilename}
-                            onRequestDelete={onRequestDelete}
-                        />
-                    ))}
-                </div>
-            )}
+            <div className="mt-6 border-t border-tint/10 pt-8">
+                {filtered.length === 0 && !showAwaiting ? (
+                    <div className="rounded-2xl border border-tint/10 p-14 text-center">
+                        <p className="display text-xl font-semibold text-txt">No videos yet</p>
+                        <p className="mt-2 text-sm text-muted">
+                            {query
+                                ? 'Nothing matches that search.'
+                                : 'Run the automation above to generate your first video.'}
+                        </p>
+                    </div>
+                ) : (
+                    <div className="grid gap-x-6 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                        {showAwaiting && (
+                            <article className="flex flex-col">
+                                <div className="grid aspect-[4/3] w-full place-items-center rounded-xl border border-tint/10 bg-tint/[0.03]">
+                                    <div className="flex flex-col items-center gap-2">
+                                        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" />
+                                        <p className="text-sm font-semibold text-txt">Rendering</p>
+                                    </div>
+                                </div>
+                                <p className="mt-3 truncate text-sm font-semibold text-muted">
+                                    Generating…
+                                </p>
+                            </article>
+                        )}
+                        {filtered.map((video) => (
+                            <VideoCard
+                                key={video.name}
+                                video={video}
+                                isNew={video.name === newFilename}
+                                onRequestDelete={onRequestDelete}
+                                onPlay={onPlay}
+                            />
+                        ))}
+                    </div>
+                )}
+            </div>
         </section>
     );
 }

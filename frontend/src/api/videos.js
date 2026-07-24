@@ -16,6 +16,11 @@ export async function listVideos() {
     return response;
 }
 
+// Live render status (which pipeline stage is running right now).
+export async function getRenderStatus() {
+    return requestJson(`${videosBaseUrl}/status`);
+}
+
 export async function deleteVideo(name) {
     return requestJson(`${videosBaseUrl}/${encodeURIComponent(name)}`, {
         method: 'DELETE',

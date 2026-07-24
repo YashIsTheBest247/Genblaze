@@ -5,7 +5,7 @@ Fallback: Google Gemini image generation (used only when Pexels has no match).
 All paths are passed as parameters - no hardcoded paths.
 """
 import json
-import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -153,7 +153,6 @@ def main_generate_images(
     images_output_path: Path,
     gemini_api_key: str,
     pexels_api_key: str = "",
-    delay_seconds: float = 2.0,
     gemini_model: str = "gemini-2.5-flash-image",
     aspect_ratio: str = "1:1",
 ) -> bool:
@@ -166,7 +165,6 @@ def main_generate_images(
         images_output_path: Directory where images should be saved
         gemini_api_key: Gemini API key (fallback image generation)
         pexels_api_key: Pexels API key (primary image source)
-        delay_seconds: Delay between API calls to avoid rate limits
         gemini_model: Gemini image model used on fallback
         aspect_ratio: Desired image aspect ratio
 
@@ -192,13 +190,16 @@ def main_generate_images(
         print("Missing key 'visual_script' in JSON.")
         return False
 
-    success_count = 0
-    for idx, scene in enumerate(data["visual_script"]):
+    scenes = data["visual_script"]
+
+    def _source_one(idx_scene):
+        """Fetch + save one scene's image. Returns True on success."""
+        idx, scene = idx_scene
         try:
             prompt = scene.get("prompt")
             if not prompt:
                 print(f"Scene {idx}: Missing prompt, skipping")
-                continue
+                return False
 
             timestamp = scene.get("timestamp_start", f"{idx:03d}")
             scene_id = timestamp.replace(":", "-")
@@ -211,20 +212,22 @@ def main_generate_images(
                 aspect_ratio=aspect_ratio,
                 gemini_model=gemini_model,
             )
-
             if not image_bytes:
                 print(f"No image obtained for prompt: {prompt}")
-                continue
+                return False
 
-            file_path = images_output_path / f"scene_{scene_id}.jpg"
-            if save_image(image_bytes, file_path):
-                success_count += 1
-
-            time.sleep(delay_seconds)
-
-        except Exception as e:
+            return save_image(image_bytes, images_output_path / f"scene_{scene_id}.jpg")
+        except Exception as e:  # noqa: BLE001 - one scene shouldn't kill the batch
             print(f"Error processing scene {idx}: {e}")
-            continue
+            return False
 
-    print(f"Image sourcing completed. {success_count}/{len(data['visual_script'])} images obtained.")
+    # Fetch every scene's image CONCURRENTLY (Pexels is a plain HTTP GET, so a
+    # sequential loop with sleeps was the bottleneck). Bounded pool keeps the
+    # Gemini image fallback from hammering the API.
+    max_workers = min(4, max(1, len(scenes)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        results = list(pool.map(_source_one, enumerate(scenes)))
+
+    success_count = sum(1 for ok in results if ok)
+    print(f"Image sourcing completed. {success_count}/{len(scenes)} images obtained.")
     return success_count > 0

@@ -46,7 +46,7 @@ def _summary_to_key_points(summary: str, limit: int = 5) -> List[str]:
     return [p.strip() for p in parts if p.strip()][:limit]
 
 
-def run_pipeline_once(top_n: Optional[int] = None) -> dict:
+def run_pipeline_once(top_n: Optional[int] = None, auto_publish: Optional[bool] = None) -> dict:
     """
     Execute one trending-pipeline run. Safe to call from the scheduler or the API.
     Returns a summary dict; never raises (errors are captured in last_run).
@@ -57,15 +57,26 @@ def run_pipeline_once(top_n: Optional[int] = None) -> dict:
 
     import time as _time
     n = top_n or settings.TRENDS_TOP_N
+    publish = settings.TRENDS_AUTO_PUBLISH if auto_publish is None else bool(auto_publish)
     generated: List[dict] = []
     last_run["error"] = None
     try:
         logger.info(f"Trending pipeline run started (top_n={n}).")
-        articles = trends_service.get_trending(top_n=n, exclude_processed=True)
+
+        # Surface the fetch/rank stages to the live pipeline UI.
+        from app.services.video_service import render_status, set_stage
+        render_status.update({"active": True, "error": None})
+        set_stage("fetch")
+        articles = trends_service.fetch_articles()
+        set_stage("trend")
+        excluded = trends_service.load_processed_links()
+        articles = trends_service.rank_articles(articles, exclude_links=excluded)[:n]
         last_run["considered"] = len(articles)
 
         if not articles:
             logger.info("No new trending articles to process.")
+            set_stage(None)
+            render_status["active"] = False
             return {"generated": [], "considered": 0}
 
         # Imported lazily so the scheduler/API modules don't require the heavy
@@ -81,7 +92,7 @@ def run_pipeline_once(top_n: Optional[int] = None) -> dict:
                     duration=settings.TRENDS_VIDEO_DURATION,
                     key_points=_summary_to_key_points(art.summary),
                     style="educational",
-                    publish_to_youtube=settings.TRENDS_AUTO_PUBLISH,
+                    publish_to_youtube=publish,
                 )
                 video_filename = service._generate_video_filename(art.title)
                 logger.info(f"Generating trending video for: {art.title!r}")
@@ -91,7 +102,7 @@ def run_pipeline_once(top_n: Optional[int] = None) -> dict:
                         "title": art.title,
                         "link": art.link,
                         "video_filename": video_filename,
-                        "published": settings.TRENDS_AUTO_PUBLISH,
+                        "published": publish,
                     }
                 )
                 processed_links.append(art.link)

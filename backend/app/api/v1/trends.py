@@ -36,10 +36,14 @@ async def trends_preview(top_n: int = Query(10, ge=1, le=50)):
 
 
 @router.post("/run")
-async def trends_run_now(background_tasks: BackgroundTasks, top_n: int = Query(None, ge=1, le=20)):
+async def trends_run_now(
+    background_tasks: BackgroundTasks,
+    top_n: int = Query(None, ge=1, le=20),
+    auto_publish: bool = Query(None, description="Override TRENDS_AUTO_PUBLISH for this run"),
+):
     """
     Trigger one pipeline run immediately (in the background). Generation still
     happens asynchronously; poll /trends/status for results.
     """
-    background_tasks.add_task(trends_scheduler.run_pipeline_once, top_n)
+    background_tasks.add_task(trends_scheduler.run_pipeline_once, top_n, auto_publish)
     return {"success": True, "message": "Trending pipeline run triggered."}

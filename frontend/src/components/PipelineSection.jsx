@@ -65,7 +65,27 @@ function PublishIcon(props) {
     );
 }
 
+function FeedIcon(props) {
+    return (
+        <svg {...iconProps} {...props}>
+            <path d="M4 11a9 9 0 0 1 9 9M4 4a16 16 0 0 1 16 16" />
+            <circle cx="5" cy="19" r="1.5" />
+        </svg>
+    );
+}
+
+function TrendIcon(props) {
+    return (
+        <svg {...iconProps} {...props}>
+            <path d="m3 17 6-6 4 4 8-8" />
+            <path d="M15 7h6v6" />
+        </svg>
+    );
+}
+
 const icons = {
+    fetch: FeedIcon,
+    trend: TrendIcon,
     script: ScriptIcon,
     image: ImageIcon,
     voice: VoiceIcon,

@@ -40,7 +40,16 @@ function Logo() {
     );
 }
 
-export function Header({ onNavigate }) {
+function SearchIcon({ className }) {
+    return (
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className={className}>
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.5-3.5" />
+        </svg>
+    );
+}
+
+export function Header({ onNavigate, searchQuery = '', onSearchChange }) {
     const [menuOpen, setMenuOpen] = useState(false);
 
     function handleNav(id) {
@@ -49,47 +58,60 @@ export function Header({ onNavigate }) {
     }
 
     return (
-        <header className="sticky top-0 z-50 border-b border-tint/10 bg-panel/70 backdrop-blur-xl">
-            <div className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4 px-5 py-3 lg:px-8 lg:py-4">
+        <header className="sticky top-0 z-50 border-b border-tint/10 bg-panel/80 backdrop-blur-xl">
+            <div className="mx-auto flex w-full max-w-[1600px] items-center gap-6 px-5 py-3 lg:px-8">
+                {/* Brand */}
                 <button
                     type="button"
                     onClick={() => handleNav('top')}
-                    className="flex items-center gap-2.5"
+                    className="flex shrink-0 items-center gap-3"
                 >
                     <Logo />
-                    <span className="display text-lg font-semibold">Flux</span>
+                    <span className="display text-lg font-bold tracking-tight">
+                        FLUX <span className="text-muted">AI</span>
+                    </span>
                 </button>
 
-                {/* Center pill nav */}
-                <nav className="hidden items-center gap-1 rounded-full border border-tint/10 bg-tint/[0.04] px-2 py-1.5 backdrop-blur-xl lg:flex">
+                {/* Nav */}
+                <nav className="hidden items-center gap-7 lg:flex">
                     {navLinks.map((link) => (
                         <button
                             key={link.id}
                             type="button"
                             onClick={() => handleNav(link.id)}
-                            className="rounded-full px-4 py-1.5 text-sm font-medium text-muted transition-colors hover:bg-tint/[0.06] hover:text-txt"
+                            className="text-xs font-semibold uppercase tracking-[0.14em] text-muted transition-colors hover:text-txt"
                         >
                             {link.label}
                         </button>
                     ))}
                 </nav>
 
-                <div className="hidden items-center gap-3 lg:flex">
+                {/* Search */}
+                <div className="relative ml-auto hidden max-w-xl flex-1 items-center md:flex">
+                    <SearchIcon className="pointer-events-none absolute left-4 h-4 w-4 text-faint" />
+                    <input
+                        type="search"
+                        value={searchQuery}
+                        onChange={(e) => onSearchChange?.(e.target.value)}
+                        placeholder="Search generated videos by topic..."
+                        className="field-input w-full rounded-xl border-tint/10 bg-tint/[0.04] py-2.5 pl-11 pr-4 text-sm"
+                    />
+                </div>
+
+                <div className="hidden shrink-0 items-center gap-2 lg:flex">
                     <ThemeToggle />
                     <a
                         href={channelUrl}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="flex items-center gap-2.5 text-sm font-medium text-txt transition-opacity hover:opacity-80"
+                        title="Flux Channel"
+                        className="grid h-9 w-9 place-items-center rounded-full border border-tint/15 bg-tint/[0.06] text-txt transition-colors hover:bg-tint/[0.12]"
                     >
-                        <span className="grid h-8 w-8 place-items-center rounded-full border border-tint/15 bg-tint/[0.06] text-txt">
-                            <YouTubeIcon className="h-4 w-4" />
-                        </span>
-                        Flux Channel
+                        <YouTubeIcon className="h-4 w-4" />
                     </a>
                 </div>
 
-                <div className="flex items-center gap-2 lg:hidden">
+                <div className="ml-auto flex items-center gap-2 lg:hidden">
                     <ThemeToggle />
                     <button
                         type="button"

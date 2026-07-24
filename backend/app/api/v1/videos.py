@@ -45,6 +45,19 @@ async def generate_video(
         raise HTTPException(status_code=500, detail=f"Video generation failed: {str(e)}")
 
 
+@router.get("/status")
+async def render_status():
+    """
+    Live render status: which pipeline stage is currently running.
+    Stage is one of: fetch, trend, script, image, voice, subtitles, assembly,
+    publish, done, error (or null when idle).
+    """
+    # Imported lazily so this endpoint stays available even before the heavy
+    # render dependencies are loaded.
+    from app.services.video_service import render_status as status
+    return status
+
+
 @router.get("/list", response_model=List[VideoListResponse])
 async def list_videos():
     """

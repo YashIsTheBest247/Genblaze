@@ -136,15 +136,23 @@ class VideoScriptGenerator:
         last_error = None
         for attempt in range(max_retries):
             try:
+                config_kwargs = dict(
+                    system_instruction=system_prompt,
+                    temperature=0.7,
+                    max_output_tokens=8192,
+                    response_mime_type="application/json",
+                )
+                # Disable Flash "thinking" — 2-3x lower latency; the JSON mime
+                # type keeps the output on-spec. Ignored if the SDK/model lacks it.
+                try:
+                    config_kwargs["thinkingConfig"] = types.ThinkingConfig(thinkingBudget=0)
+                except Exception:  # noqa: BLE001
+                    pass
+
                 response = self.client.models.generate_content(
                     model=self.model,
                     contents=prompt,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=0.7,
-                        max_output_tokens=8192,
-                        response_mime_type="application/json",
-                    ),
+                    config=types.GenerateContentConfig(**config_kwargs),
                 )
                 return response.text
             except Exception as e:  # noqa: BLE001
