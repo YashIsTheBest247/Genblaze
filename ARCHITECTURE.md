@@ -8,33 +8,119 @@ Technical design of the news-to-video automation system. For setup and usage see
 
 Flux is a two-tier application: a **FastAPI backend** that owns the render pipeline and a **React SPA** that drives and observes it.
 
+```mermaid
+flowchart TD
+
+  subgraph FE["Client Layer · React 19 + Vite + Tailwind"]
+    direction LR
+    HERO["Hero + demo reel"]
+    AUTO["Automation console<br/>top-N · auto-publish · Run"]
+    PIPE["Pipeline · live stage strip"]
+    LIB["Library + 9:16 player"]
+  end
+
+  subgraph GWL["Gateway and Application Layer · FastAPI"]
+    direction LR
+    API["REST /api/v1/videos · /api/v1/trends"]
+    STATIC["Static mount /videos<br/>mp4 + jpg"]
+    LIFE["lifespan · scheduler start/stop"]
+  end
+
+  subgraph SENSE["SENSE and RANK · what deserves a video"]
+    direction LR
+    SCHED["trends_scheduler<br/>APScheduler · every 6h · max_instances=1"]
+    FETCH["fetch + normalize + dedup"]
+    RANK["rank_articles<br/>0.45 recency + 0.55 momentum"]
+    SEEN[("trends_state.json<br/>last 500 links")]
+  end
+
+  subgraph RENDER["RENDER · the pipeline · serialized by _render_lock"]
+    direction LR
+    S1["1 · script"]
+    S2["2 · visuals"]
+    S3["3 · narration"]
+    S4["4 · subtitles"]
+    S5["5 · assembly"]
+    S6["6 · thumbnail"]
+  end
+
+  subgraph OBS["OBSERVE · single source of truth"]
+    direction LR
+    STATUS["render_status<br/>active · stage · error · done"]
+    LOCK["_render_lock<br/>one render at a time"]
+  end
+
+  subgraph PUB["PUBLISH and STORE"]
+    direction LR
+    YT["youtube_service<br/>OAuth refresh · resumable upload"]
+    STORE[("static/videos<br/>mp4 + thumbnail")]
+  end
+
+  subgraph EXT["AI + Data Layer · external and local engines"]
+    direction LR
+    ETRSS["Economic Times RSS"]
+    GEMINI["Google Gemini 2.5 Flash<br/>script · image fallback"]
+    PEXELS["Pexels stock search"]
+    KOKORO["Kokoro TTS · local"]
+    FFMPEG["MoviePy + ffmpeg · local"]
+    YTAPI["YouTube Data API v3"]
+  end
+
+  AUTO -->|"POST /trends/run"| API
+  AUTO -->|"POST /videos/generate"| API
+  PIPE -->|"GET /videos/status · 2.5s poll"| API
+  LIB -->|"GET /videos/list"| API
+  LIB --> STATIC
+
+  LIFE --> SCHED
+  SCHED -->|"cron tick"| FETCH
+  API -->|"/trends/preview · /trends/run"| FETCH
+  FETCH --> RANK
+  RANK <-->|"skip already processed"| SEEN
+  RANK -->|"top-N article"| LOCK
+  API -->|"custom topic · background task"| LOCK
+
+  LOCK --> S1 --> S2 --> S3 --> S4 --> S5 --> S6
+  RENDER -.->|"mutates on every stage"| STATUS
+  STATUS -->|"polled"| API
+
+  FETCH --> ETRSS
+  S1 --> GEMINI
+  S2 --> PEXELS
+  S2 -.->|"no match → fallback"| GEMINI
+  S3 --> KOKORO
+  S5 --> FFMPEG
+  S6 --> FFMPEG
+  S6 --> STORE
+  S6 -->|"if auto-publish"| YT
+  YT --> YTAPI
+  STORE --> STATIC
+
+  classDef box fill:#eeeaff,stroke:#7a6fd0,color:#2f2a55;
+  classDef store fill:#e6f0ff,stroke:#5b7fc7,color:#22354f;
+  class HERO,AUTO,PIPE,LIB,API,STATIC,LIFE,SCHED,FETCH,RANK,S1,S2,S3,S4,S5,S6,STATUS,LOCK,YT,ETRSS,GEMINI,PEXELS,KOKORO,FFMPEG,YTAPI box;
+  class SEEN,STORE store;
+
+  style FE fill:#fdfde8,stroke:#cfcf9a
+  style GWL fill:#fdfde8,stroke:#cfcf9a
+  style SENSE fill:#fdfde8,stroke:#cfcf9a
+  style RENDER fill:#fdfde8,stroke:#cfcf9a
+  style OBS fill:#fdfde8,stroke:#cfcf9a
+  style PUB fill:#fdfde8,stroke:#cfcf9a
+  style EXT fill:#fdfde8,stroke:#cfcf9a
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│ Frontend (React 19 + Vite + Tailwind)                                │
-│                                                                      │
-│  Hero ──▶ Automation ──▶ Pipeline (live) ──▶ Library                 │
-│           (top-N, auto-publish, Run)   ▲          │                  │
-└───────────────────┬────────────────────┼──────────┼──────────────────┘
-                    │ POST /trends/run   │ GET      │ GET /videos/list
-                    │ POST /videos/generate  /videos/status            │
-                    ▼                    │          ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ Backend (FastAPI)                                                    │
-│                                                                      │
-│  ┌────────────────┐   ┌──────────────────────────────────────────┐   │
-│  │ TrendsScheduler│──▶│ VideoGenerationService                    │   │
-│  │ (APScheduler)  │   │  serialized by _render_lock               │   │
-│  └───────┬────────┘   │                                          │   │
-│          │            │  script → visuals → audio → subtitles →  │   │
-│  ┌───────▼────────┐   │  assemble → thumbnail → publish          │   │
-│  │ TrendsService  │   └──────────────────┬───────────────────────┘   │
-│  │ fetch + rank   │                      │                           │
-│  └───────┬────────┘                      ▼                           │
-└──────────┼───────────────────────────────┼───────────────────────────┘
-           │                               │
-    Economic Times RSS            Gemini · Pexels · Kokoro
-                                  ffmpeg · YouTube Data API
-```
+
+### Reading the diagram
+
+| Band | What it owns | Why it's its own layer |
+|---|---|---|
+| **Client** | Rendering state the backend reports; never simulating it | The UI is a viewer, not a second state machine |
+| **Gateway** | REST surface, static MP4/JPG mount, scheduler lifespan | One entry point; the static mount means finished videos are served without touching Python |
+| **Sense & Rank** | RSS → normalize → dedup → score → top-N | Deterministic and free, so it can run every cycle without LLM cost |
+| **Render** | The 6-stage pipeline, one article at a time | Stages share working directories, so they must be serialized |
+| **Observe** | `_render_lock` + `render_status` | The lock enforces serialization; the status dict is the *only* progress truth |
+| **Publish & Store** | YouTube upload, local library | Publishing is optional — a render is complete whether or not it uploads |
+| **AI + Data** | Gemini, Pexels, Kokoro, ffmpeg, YouTube API, ET RSS | Everything the pipeline calls out to; two of them (Kokoro, ffmpeg) run locally and dominate runtime |
 
 **Key property:** the backend is the single source of truth for render state. The frontend never simulates progress — it polls `/videos/status` and renders whatever stage the backend reports.
 
