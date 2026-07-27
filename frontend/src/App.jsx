@@ -7,9 +7,16 @@ import { LibrarySection } from './components/LibrarySection.jsx';
 import { DevFooter } from './components/DevFooter.jsx';
 import { ConfirmDialog } from './components/ConfirmDialog.jsx';
 import { VideoPlayerModal } from './components/VideoPlayerModal.jsx';
+import { ProvenanceModal } from './components/ProvenanceModal.jsx';
 import { pipelineSteps } from './data/options.js';
 import { buildVideoPayload } from './lib/payload.js';
-import { generateVideo, listVideos, deleteVideo, getRenderStatus } from './api/videos.js';
+import {
+    generateVideo,
+    listVideos,
+    deleteVideo,
+    getRenderStatus,
+    getStorageStatus,
+} from './api/videos.js';
 import { runAutomation } from './api/trends.js';
 
 const idlePipeline = {
@@ -27,6 +34,8 @@ export function App() {
     const [newFilename, setNewFilename] = useState(null);
     const [pendingDelete, setPendingDelete] = useState(null);
     const [playingVideo, setPlayingVideo] = useState(null);
+    const [provenanceVideo, setProvenanceVideo] = useState(null);
+    const [storageStatus, setStorageStatus] = useState(null);
 
     const pollTimerRef = useRef(null);
     const generatingRef = useRef(false);
@@ -40,6 +49,11 @@ export function App() {
             setVideos([]);
             return [];
         }
+    }, []);
+
+    useEffect(() => {
+        // Where media actually lives (B2 bucket) and whether Genblaze is active.
+        getStorageStatus().then(setStorageStatus).catch(() => setStorageStatus(null));
     }, []);
 
     useEffect(() => {
@@ -273,6 +287,8 @@ export function App() {
                     newFilename={newFilename}
                     onRequestDelete={setPendingDelete}
                     onPlay={setPlayingVideo}
+                    onShowProvenance={setProvenanceVideo}
+                    storageStatus={storageStatus}
                 />
             </main>
             <DevFooter />
@@ -289,6 +305,7 @@ export function App() {
                 onCancel={() => setPendingDelete(null)}
             />
             <VideoPlayerModal video={playingVideo} onClose={() => setPlayingVideo(null)} />
+            <ProvenanceModal video={provenanceVideo} onClose={() => setProvenanceVideo(null)} />
         </div>
     );
 }

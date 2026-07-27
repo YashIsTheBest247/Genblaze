@@ -11,6 +11,13 @@ google-genai
 beautifulsoup4
 requests
 
+# Genblaze - generative media orchestration + provenance manifests,
+# and Backblaze B2 (S3-compatible) durable storage for every artefact.
+genblaze-core
+genblaze-s3
+genblaze-google
+genblaze-gmicloud
+
 # Trending pipeline (RSS monitoring + scheduling)
 feedparser
 APScheduler

@@ -83,6 +83,24 @@ function TrendIcon(props) {
     );
 }
 
+function ShieldIcon(props) {
+    return (
+        <svg {...iconProps} {...props}>
+            <path d="M12 3 5 6v5.5c0 4.3 2.9 8.3 7 9.5 4.1-1.2 7-5.2 7-9.5V6z" />
+            <path d="m9 12 2 2 4-4" />
+        </svg>
+    );
+}
+
+function CloudIcon(props) {
+    return (
+        <svg {...iconProps} {...props}>
+            <path d="M7 18a4 4 0 0 1-.4-8A6 6 0 0 1 18 9.5a3.5 3.5 0 0 1-.5 8z" />
+            <path d="M12 12v5M9.5 14.5 12 12l2.5 2.5" />
+        </svg>
+    );
+}
+
 const icons = {
     fetch: FeedIcon,
     trend: TrendIcon,
@@ -91,6 +109,8 @@ const icons = {
     voice: VoiceIcon,
     subtitles: SubsIcon,
     assembly: GearIcon,
+    provenance: ShieldIcon,
+    storage: CloudIcon,
     publish: PublishIcon,
 };
 

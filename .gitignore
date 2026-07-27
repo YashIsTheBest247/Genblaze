@@ -33,6 +33,10 @@ frontend/dist/
 frontend/dist-ssr/
 *.local
 
+# Built SPA copied into the backend for single-URL deploys. The Dockerfile
+# produces this at build time, so it should never be committed.
+backend/static/app/
+
 # Environment Variables
 .env
 .env.local

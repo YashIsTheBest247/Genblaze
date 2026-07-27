@@ -5,13 +5,14 @@ All paths are dynamically resolved from configuration
 """
 import logging
 import json
+import os
 import time
 import re
 import shutil
 import subprocess
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Sequence
 from fastapi import BackgroundTasks
 
 from app.schemas.video import VideoGenerationRequest, VideoGenerationResponse
@@ -43,6 +44,12 @@ render_status = {
     "updated_at": None,
 }
 
+# Genblaze cloud image generation is attempted first when configured, but a key
+# that lacks entitlement (e.g. Imagen on a free-tier Gemini key) would fail once
+# per scene, per render, forever. One total failure trips this breaker and the
+# process falls straight through to Pexels/Gemini for the rest of its life.
+_genblaze_images_disabled = False
+
 
 def set_stage(stage: Optional[str], **extra) -> None:
     """Record the current pipeline stage (safe to call from any thread)."""
@@ -63,7 +70,58 @@ class VideoGenerationService:
             ollama_model=settings.OLLAMA_MODEL,
             ollama_base_url=settings.OLLAMA_BASE_URL,
         )
-    
+        # Per-render bookkeeping, read back when the provenance record is built.
+        # Safe as instance state because _render_lock serializes renders.
+        self._last_image_run_id: Optional[str] = None
+        self._last_audio_run_id: Optional[str] = None
+        self._last_b2_keys: Dict[str, Optional[str]] = {}
+
+    # ------------------------------------------------------------------
+    # Genblaze generation adapters
+    #
+    # Passed down into the image/TTS modules so those stay free of app-level
+    # imports. Both are best-effort: returning an empty list makes the caller
+    # fall back to its own source.
+    # ------------------------------------------------------------------
+
+    def _genblaze_images(
+        self,
+        prompts: List[str],
+        targets: List[Path],
+        aspect_ratio: str,
+    ) -> Sequence[Optional[Path]]:
+        global _genblaze_images_disabled
+        if _genblaze_images_disabled:
+            return []
+
+        from app.services.genblaze_service import genblaze
+
+        result = genblaze.generate_images(prompts, targets, aspect_ratio=aspect_ratio)
+        self._last_image_run_id = result.run_id
+
+        if not result.any_succeeded and (result.error or prompts):
+            # Nothing came back at all — almost always a missing entitlement on
+            # the configured key. Stop paying the latency on every later render.
+            _genblaze_images_disabled = True
+            logger.info(
+                "Genblaze image generation produced nothing (%s); "
+                "using Pexels/Gemini for the rest of this process.",
+                result.error or "no assets",
+            )
+        return result.paths
+
+    def _genblaze_narration(
+        self,
+        texts: List[str],
+        targets: List[Path],
+    ) -> Sequence[Optional[Path]]:
+        from app.services.genblaze_service import genblaze
+
+        result = genblaze.synthesize_speech(texts, targets)
+        self._last_audio_run_id = result.run_id
+        return result.paths
+
+
     def _clean_directory(self, folder_path: Path):
         """Clean all files in a directory"""
         if not folder_path.exists():
@@ -140,6 +198,12 @@ class VideoGenerationService:
                 {"active": True, "error": None, "topic": request.topic,
                  "video_filename": video_filename}
             )
+            # Per-stage record of what produced this render. It becomes the
+            # source metadata of the Genblaze provenance manifest.
+            stages: List[Dict[str, Any]] = []
+            self._last_image_run_id = None
+            self._last_audio_run_id = None
+            self._last_b2_keys = {}
             set_stage("script")
 
             # Lazy imports: load the heavy pipeline only when actually rendering.
@@ -184,9 +248,20 @@ class VideoGenerationService:
             self.script_generator.save_script(script, str(script_path))
             logger.info(f"Script saved to: {script_path}")
             
-            # Step 3: Source a distinct image per scene (Pexels -> Gemini fallback).
+            stages.append({
+                "stage": "script",
+                "provider": settings.SCRIPT_PROVIDER,
+                "model": (settings.GEMINI_TEXT_MODEL
+                          if settings.SCRIPT_PROVIDER == "gemini" else settings.OLLAMA_MODEL),
+                "target_duration_sec": content_duration,
+            })
+
+            # Step 3: Source a distinct image per scene.
+            # Genblaze generation first (recorded in the manifest), then Pexels
+            # stock, then direct Gemini — each scene falls back independently.
             set_stage("image")
             logger.info("Generating images...")
+            image_sources: dict = {}
             main_generate_images(
                 script_path=script_path,
                 images_output_path=settings.IMAGES_DIR,
@@ -194,18 +269,40 @@ class VideoGenerationService:
                 pexels_api_key=settings.PEXELS_API_KEY,
                 gemini_model=settings.IMAGE_GEN_MODEL,
                 aspect_ratio=settings.IMAGE_ASPECT_RATIO,
+                image_provider=settings.IMAGE_PROVIDER,
+                genblaze_generator=self._genblaze_images,
+                source_log=image_sources,
             )
             logger.info("Images generated successfully")
-            
-            # Step 4: Generate audio
+            stages.append({
+                "stage": "visuals",
+                "provider": "genblaze" if "genblaze" in image_sources.values() else None,
+                "model": settings.GENBLAZE_IMAGE_MODEL,
+                "aspect_ratio": settings.IMAGE_ASPECT_RATIO,
+                "per_scene_source": image_sources,
+                "genblaze_run_id": self._last_image_run_id,
+            })
+
+            # Step 4: Generate audio (Genblaze cloud TTS, else local Kokoro)
             set_stage("voice")
             logger.info("Generating audio...")
+            voice_source: dict = {}
             main_generate_audio(
                 script_path=script_path,
-                audio_path=settings.AUDIO_DIR
+                audio_path=settings.AUDIO_DIR,
+                lang_code=settings.TTS_LANG_CODE,
+                genblaze_generator=self._genblaze_narration,
+                source_log=voice_source,
             )
             logger.info("Audio generated successfully")
-            
+            stages.append({
+                "stage": "narration",
+                "provider": voice_source.get("provider"),
+                "model": (settings.GENBLAZE_TTS_MODEL
+                          if voice_source.get("provider") == "genblaze" else "kokoro-82m"),
+                "genblaze_run_id": self._last_audio_run_id,
+            })
+
             # Step 5: Generate subtitles
             set_stage("subtitles")
             logger.info("Generating subtitles...")
@@ -244,15 +341,60 @@ class VideoGenerationService:
             shutil.copy(temp_video_path, final_video_path)
 
             # Step 7b: Generate a thumbnail (poster) for the library
-            self._generate_thumbnail(final_video_path)
+            thumbnail_path = self._generate_thumbnail(final_video_path)
+
+            stages.append({
+                "stage": "assembly",
+                "provider": "moviepy+ffmpeg",
+                "model": None,
+                "resolution": (
+                    f"{os.getenv('FLUX_VIDEO_WIDTH', '480')}x"
+                    f"{os.getenv('FLUX_VIDEO_HEIGHT', '854')}"
+                ),
+                "fps": settings.DEFAULT_VIDEO_FPS,
+            })
 
             logger.info(f"Video generation complete: {video_filename}")
 
-            # Step 8: Auto-publish to YouTube when the per-render flag is set OR
+            # Step 8: Provenance — register the render as a Genblaze ingest run,
+            # producing a SHA-256-bound manifest, and embed it into the MP4.
+            set_stage("provenance")
+            manifest = self._record_provenance(
+                request=request,
+                video_path=final_video_path,
+                thumbnail_path=thumbnail_path,
+                srt_path=srt_path,
+                script_path=script_path,
+                stages=stages,
+            )
+
+            # Step 9: Durable storage — push every artefact to Backblaze B2.
+            set_stage("storage")
+            self._publish_to_b2(
+                request=request,
+                video_path=final_video_path,
+                thumbnail_path=thumbnail_path,
+                srt_path=srt_path,
+                script_path=script_path,
+                manifest=manifest,
+                stages=stages,
+            )
+
+            # Step 10: Auto-publish to YouTube when the per-render flag is set OR
             # the global YOUTUBE_AUTO_UPLOAD setting is enabled.
             if request.publish_to_youtube or settings.YOUTUBE_AUTO_UPLOAD:
                 set_stage("publish")
                 self._publish_to_youtube(request, final_video_path)
+
+            # Local disk is scratch space in B2-first mode: drop the copy once
+            # the bytes are safely in the bucket.
+            if not settings.KEEP_LOCAL_COPY and self._last_b2_keys.get("video"):
+                for path in (final_video_path, thumbnail_path):
+                    try:
+                        if path and Path(path).exists():
+                            Path(path).unlink()
+                    except OSError as e:
+                        logger.warning(f"Could not remove local copy {path}: {e}")
 
             set_stage("done")
 
@@ -294,6 +436,105 @@ class VideoGenerationService:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Thumbnail fallback failed: {e}")
         return None
+
+    def _record_provenance(
+        self,
+        *,
+        request: VideoGenerationRequest,
+        video_path: Path,
+        thumbnail_path: Optional[Path],
+        srt_path: Optional[Path],
+        script_path: Optional[Path],
+        stages: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Build the Genblaze provenance manifest for this render and embed it into
+        the MP4. Best-effort: a render is still valid without it.
+        """
+        try:
+            from app.services.genblaze_service import genblaze
+
+            artefacts = [(video_path, "final_video", "video/mp4")]
+            if thumbnail_path and Path(thumbnail_path).exists():
+                artefacts.append((thumbnail_path, "thumbnail", "image/jpeg"))
+            if srt_path and Path(srt_path).exists():
+                artefacts.append((srt_path, "captions", "application/x-subrip"))
+            if script_path and Path(script_path).exists():
+                artefacts.append((script_path, "script", "application/json"))
+
+            manifest = genblaze.record_render(
+                topic=request.topic,
+                artefacts=artefacts,
+                stages=stages,
+                extra={
+                    "requested_duration_sec": request.duration,
+                    "key_points": request.key_points,
+                    "style": request.style,
+                },
+            )
+            if manifest and settings.GENBLAZE_EMBED_MANIFEST:
+                # Embed BEFORE upload so the bytes in B2 carry the manifest too.
+                # This changes the file, so the manifest's own sha256 for the mp4
+                # describes the pre-embed bytes by design — that is the hash of
+                # the rendered content, which is what provenance should assert.
+                genblaze.embed_manifest(video_path, manifest)
+            return manifest
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Provenance recording failed: {e}", exc_info=True)
+            return None
+
+    def _publish_to_b2(
+        self,
+        *,
+        request: VideoGenerationRequest,
+        video_path: Path,
+        thumbnail_path: Optional[Path],
+        srt_path: Optional[Path],
+        script_path: Optional[Path],
+        manifest: Optional[Dict[str, Any]],
+        stages: List[Dict[str, Any]],
+    ) -> None:
+        """
+        Upload the finished render to Backblaze B2.
+
+        This is what makes the library durable: the video, its poster, captions,
+        script and provenance manifest all live in the bucket, so an ephemeral
+        host can be restarted or redeployed without losing the library.
+        """
+        try:
+            from app.services.storage_service import storage
+
+            if not storage.available:
+                if settings.b2_configured:
+                    logger.warning("B2 configured but unavailable — keeping video on local disk.")
+                else:
+                    logger.info("B2 not configured — video stays on local disk only.")
+                return
+
+            stem = Path(video_path).stem
+            keys = storage.upload_render(
+                stem=stem,
+                video_path=video_path,
+                thumbnail_path=thumbnail_path,
+                srt_path=srt_path,
+                script_path=script_path,
+                manifest=manifest,
+                meta={
+                    "topic": request.topic,
+                    "duration_sec": request.duration,
+                    "key_points": request.key_points,
+                    "style": request.style,
+                    "created_at": time.time(),
+                    "stages": stages,
+                    "manifest_hash": (manifest or {}).get("canonical_hash"),
+                    "run_id": ((manifest or {}).get("run") or {}).get("run_id"),
+                    "verified": bool((manifest or {}).get("_verified")),
+                },
+            )
+            self._last_b2_keys = keys
+            logger.info("Render published to B2: %s", keys.get("video"))
+        except Exception as e:  # noqa: BLE001 - never fail a render on upload
+            logger.error(f"B2 publish failed: {e}", exc_info=True)
 
     def _publish_to_youtube(self, request: VideoGenerationRequest, video_path: Path):
         """

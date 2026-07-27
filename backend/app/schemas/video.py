@@ -57,15 +57,52 @@ class VideoGenerationResponse(BaseModel):
 
 
 class VideoListResponse(BaseModel):
-    """Response model for video listing"""
+    """
+    One entry in the media library.
+
+    `path` is a presigned Backblaze B2 URL when the video lives in the bucket
+    (the normal case) and a local /static path only for videos rendered before
+    B2 was configured.
+    """
     name: str
     path: str
     thumbnail: Optional[str] = None
-    
+    # Storage + provenance detail, surfaced as badges in the library UI.
+    storage: Literal["b2", "local"] = "local"
+    topic: Optional[str] = None
+    created_at: Optional[float] = None
+    duration_sec: Optional[int] = None
+    verified: bool = False
+    manifest_hash: Optional[str] = None
+    run_id: Optional[str] = None
+    has_provenance: bool = False
+
     class Config:
         json_schema_extra = {
             "example": {
-                "name": "introduction_to_machine_learning_1234567890.mp4",
-                "path": "/static/videos/introduction_to_machine_learning_1234567890.mp4"
+                "name": "RBI_repo_rate_decision_1234567890.mp4",
+                "path": "https://s3.us-west-004.backblazeb2.com/flux-media/...",
+                "thumbnail": "https://s3.us-west-004.backblazeb2.com/flux-media/...",
+                "storage": "b2",
+                "topic": "RBI holds repo rate at 6.5%",
+                "verified": True,
+                "manifest_hash": "94e3b2e0da986e1a...",
+                "has_provenance": True,
             }
         }
+
+
+class ProvenanceResponse(BaseModel):
+    """Genblaze provenance record for one video."""
+    name: str
+    available: bool
+    verified: bool = False
+    canonical_hash: Optional[str] = None
+    run_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+    created_at: Optional[str] = None
+    stages: List[dict] = Field(default_factory=list)
+    assets: List[dict] = Field(default_factory=list)
+    manifest: Optional[dict] = None
+    verification: Optional[dict] = None
+    manifest_url: Optional[str] = None

@@ -38,7 +38,10 @@ class Settings(BaseSettings):
         return [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
     
     # API Keys
-    GEMINI_API_KEY: str = Field(..., env="GEMINI_API_KEY")
+    # Not hard-required at import time: Flux can now run script/image generation
+    # through other Genblaze providers, and a missing key should surface as a
+    # degraded /health readiness report rather than a container that won't boot.
+    GEMINI_API_KEY: str = Field(default="", env="GEMINI_API_KEY")
 
     # Pexels API key - primary source for scene images (optional; falls back to Gemini)
     PEXELS_API_KEY: str = Field(default="", env="PEXELS_API_KEY")
@@ -83,6 +86,69 @@ class Settings(BaseSettings):
     
     # TTS settings
     TTS_LANG_CODE: str = Field(default="b", env="TTS_LANG_CODE")
+
+    # ------------------------------------------------------------------
+    # Backblaze B2 — durable object storage for the media library
+    # ------------------------------------------------------------------
+    # Flux is B2-first: every finished render (mp4 + thumbnail + srt + script +
+    # provenance manifest) is uploaded to B2 and served from there. Local disk is
+    # scratch space only, which is what makes ephemeral hosts (Render/Railway/
+    # Fly/HF Spaces free tiers) viable — the library survives a container restart.
+    B2_KEY_ID: str = Field(default="", env="B2_KEY_ID")
+    B2_APP_KEY: str = Field(default="", env="B2_APP_KEY")
+    B2_BUCKET: str = Field(default="", env="B2_BUCKET")
+    # Region slug from the bucket's S3 endpoint (s3.us-west-004... -> us-west-004).
+    B2_REGION: str = Field(default="", env="B2_REGION")
+    # Key namespace inside the bucket. Genblaze runs land under <prefix>/runs/.
+    B2_PREFIX: str = Field(default="flux", env="B2_PREFIX")
+    # Lifetime of the presigned GET URLs handed to the browser.
+    B2_URL_TTL_SECONDS: int = Field(default=3600, env="B2_URL_TTL_SECONDS")
+    # Keep the rendered mp4 on local disk after a successful B2 upload. Off by
+    # default (B2-first): the local copy is deleted once B2 has the bytes.
+    KEEP_LOCAL_COPY: bool = Field(default=False, env="KEEP_LOCAL_COPY")
+
+    @property
+    def b2_configured(self) -> bool:
+        """True when enough B2 credentials are present to use object storage."""
+        return bool(self.B2_KEY_ID and self.B2_APP_KEY and self.B2_BUCKET)
+
+    # ------------------------------------------------------------------
+    # Genblaze — generative media orchestration + provenance
+    # ------------------------------------------------------------------
+    GENBLAZE_ENABLED: bool = Field(default=True, env="GENBLAZE_ENABLED")
+    # Tenant namespace recorded on every Run/Manifest and used in the B2 key path.
+    GENBLAZE_TENANT_ID: str = Field(default="flux", env="GENBLAZE_TENANT_ID")
+    # Bucket layout: "hierarchical" (runs grouped by tenant/date/run_id) or
+    # "content_addressable" (deduplicated by sha256).
+    GENBLAZE_KEY_STRATEGY: str = Field(default="hierarchical", env="GENBLAZE_KEY_STRATEGY")
+    # Write the provenance manifest into the mp4 itself, so the file carries its
+    # own generation record even after it leaves B2.
+    GENBLAZE_EMBED_MANIFEST: bool = Field(default=True, env="GENBLAZE_EMBED_MANIFEST")
+
+    # GMI Cloud — unlocks Genblaze cloud image/audio/video models. Optional:
+    # without it Flux falls back to the Google provider + local Kokoro TTS.
+    GMI_API_KEY: str = Field(default="", env="GMI_API_KEY")
+
+    # Scene image source. "auto" = Pexels -> Genblaze -> direct Gemini.
+    # Force a single source with: pexels | genblaze | gemini
+    IMAGE_PROVIDER: str = Field(default="auto", env="IMAGE_PROVIDER")
+    # Genblaze image model. Google (imagen-*) needs GEMINI_API_KEY; GMI models
+    # (seedream-*, flux-*) need GMI_API_KEY.
+    GENBLAZE_IMAGE_MODEL: str = Field(
+        default="imagen-3.0-fast-generate-001", env="GENBLAZE_IMAGE_MODEL"
+    )
+
+    # Narration source. "auto" = Genblaze cloud TTS when GMI_API_KEY is set,
+    # otherwise local Kokoro. Force with: kokoro | genblaze
+    TTS_PROVIDER: str = Field(default="auto", env="TTS_PROVIDER")
+    GENBLAZE_TTS_MODEL: str = Field(
+        default="minimax-tts-speech-2.6-turbo", env="GENBLAZE_TTS_MODEL"
+    )
+    GENBLAZE_TTS_VOICE: str = Field(default="", env="GENBLAZE_TTS_VOICE")
+
+    @property
+    def gmi_configured(self) -> bool:
+        return bool(self.GMI_API_KEY)
 
     # YouTube auto-publishing
     # When true, EVERY generated video is published (not just ones where the UI

@@ -4,6 +4,7 @@ FastAPI Video Generator - Main Application Entry Point
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -66,9 +67,19 @@ app.mount("/static", StaticFiles(directory=settings.STATIC_DIR), name="static")
 app.include_router(api_router, prefix="/api/v1")
 
 
+# Built single-page app, when it has been bundled into the image. Serving the UI
+# from the same origin as the API gives deployments ONE public URL and removes
+# CORS from the equation entirely; the split Vercel + API deploy still works when
+# this directory is absent.
+SPA_DIR = settings.STATIC_DIR / "app"
+SPA_INDEX = SPA_DIR / "index.html"
+
+
 @app.get("/")
 async def root():
-    """API root - the UI is served by the separate frontend app"""
+    """Serve the bundled UI when present, otherwise describe the API."""
+    if SPA_INDEX.exists():
+        return FileResponse(SPA_INDEX)
     return {
         "service": settings.APP_NAME,
         "version": settings.VERSION,
@@ -79,12 +90,43 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """
+    Health check + readiness report.
+
+    Always returns 200 so the platform's health probe passes even when an
+    optional integration is unconfigured — `ready` tells you whether the app can
+    actually render, and `checks` says exactly what is missing.
+    """
+    from app.services.genblaze_service import genblaze
+    from app.services.storage_service import storage
+
+    b2 = storage.status()
+    checks = {
+        "script_llm": bool(settings.GEMINI_API_KEY) or settings.SCRIPT_PROVIDER == "ollama",
+        "backblaze_b2": b2["available"],
+        "genblaze": genblaze.enabled,
+        "genblaze_sink": genblaze.status()["sink"] is not None,
+        "stock_images": bool(settings.PEXELS_API_KEY),
+        "gmi_cloud": settings.gmi_configured,
+    }
     return {
         "status": "healthy",
         "version": settings.VERSION,
-        "environment": settings.ENVIRONMENT
+        "environment": settings.ENVIRONMENT,
+        # Renders need a script model; everything else degrades gracefully.
+        "ready": checks["script_llm"],
+        "durable_storage": checks["backblaze_b2"],
+        "checks": checks,
+        "backblaze_b2": b2,
+        "genblaze": genblaze.status(),
     }
+
+
+# Mounted LAST so /health, /docs and /api/v1/* keep priority — this only catches
+# the SPA's own asset requests (/assets/*, /favicon.svg, ...).
+if SPA_DIR.exists():
+    app.mount("/", StaticFiles(directory=SPA_DIR, html=True), name="spa")
+    logger.info("Serving bundled UI from %s", SPA_DIR)
 
 
 if __name__ == "__main__":

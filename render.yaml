@@ -1,42 +1,70 @@
 
+# Render blueprint — one service, one public URL.
+# The Docker image builds the React SPA and serves it from FastAPI, so judges
+# get a single URL for both UI and API. Durability comes from Backblaze B2, so
+# no persistent disk is needed even though Render's filesystem is ephemeral.
+#
+# The free plan (512 MB RAM) OOMs mid-render — use `starter` or larger.
 services:
   - type: web
-    name: flux-backend
-    runtime: python
-    rootDir: backend
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    name: flux
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
     healthCheckPath: /health
     autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.4
       - key: ENVIRONMENT
         value: production
       - key: DEBUG
         value: "False"
-      # Secrets — set these in the Render dashboard (sync:false = not stored in git)
+
+      # --- Script model (required) ------------------------------------
       - key: GEMINI_API_KEY
         sync: false
+
+      # --- Backblaze B2: durable media storage (required) -------------
+      - key: B2_KEY_ID
+        sync: false
+      - key: B2_APP_KEY
+        sync: false
+      - key: B2_BUCKET
+        sync: false
+      - key: B2_REGION
+        sync: false
+      - key: B2_PREFIX
+        value: flux
+      - key: KEEP_LOCAL_COPY
+        value: "false"
+
+      # --- Genblaze: orchestration + provenance -----------------------
+      - key: GENBLAZE_ENABLED
+        value: "true"
+      - key: GENBLAZE_TENANT_ID
+        value: flux
+      - key: GENBLAZE_EMBED_MANIFEST
+        value: "true"
+      # Optional — unlocks Genblaze cloud image/audio models.
+      - key: GMI_API_KEY
+        sync: false
+
+      # --- Optional integrations --------------------------------------
       - key: PEXELS_API_KEY
         sync: false
-      # Comma-separated allowed origins; include your Vercel URL, e.g.
-      # https://flux-frontend.vercel.app
+      # Only needed for a split frontend deploy; the bundled UI is same-origin.
       - key: CORS_ORIGINS
         sync: false
-      # Paste the full contents of secrets/youtube_token.json here to enable
-      # auto-publish (secrets/ is gitignored and Render's FS is ephemeral).
+      # Paste the contents of secrets/youtube_token.json to enable publishing.
       - key: YOUTUBE_TOKEN_JSON
         sync: false
-      # Trending pipeline — off by default; flip to true to enable on the server.
+
+      # --- Trending scheduler — off by default ------------------------
       - key: TRENDS_ENABLED
         value: "false"
       - key: TRENDS_AUTO_PUBLISH
         value: "false"
 
-# To enable durable video storage (paid), add back:
-#   disk:
-#     name: flux-media
-#     mountPath: /opt/render/project/src/backend/static
-#     sizeGB: 5
+      # Small instances: cap ffmpeg threads to keep peak memory down.
+      - key: FLUX_FFMPEG_THREADS
+        value: "2"

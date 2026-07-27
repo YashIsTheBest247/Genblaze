@@ -42,6 +42,16 @@ flowchart TD
     S4["4 · subtitles"]
     S5["5 · assembly"]
     S6["6 · thumbnail"]
+    S7["7 · provenance"]
+    S8["8 · storage"]
+  end
+
+  subgraph PROV["PROVENANCE · Genblaze · every output is answerable"]
+    direction LR
+    INGEST["Pipeline.ingest<br/>assets + stage record"]
+    MANIFEST["Manifest<br/>canonical hash · sha256 per asset"]
+    EMBED["Mp4Handler.embed<br/>manifest inside the file"]
+    SINK["ObjectStorageSink<br/>runs written to B2"]
   end
 
   subgraph OBS["OBSERVE · single source of truth"]
@@ -53,14 +63,17 @@ flowchart TD
   subgraph PUB["PUBLISH and STORE"]
     direction LR
     YT["youtube_service<br/>OAuth refresh · resumable upload"]
-    STORE[("static/videos<br/>mp4 + thumbnail")]
+    B2[("Backblaze B2<br/>mp4 · jpg · srt · script · manifest")]
+    SCRATCH[("local disk<br/>scratch · cleared after upload")]
   end
 
   subgraph EXT["AI + Data Layer · external and local engines"]
     direction LR
     ETRSS["Economic Times RSS"]
     GEMINI["Google Gemini 2.5 Flash<br/>script · image fallback"]
+    GBIMG["Genblaze image<br/>Imagen · GMI Cloud"]
     PEXELS["Pexels stock search"]
+    GBTTS["Genblaze audio<br/>GMI Cloud TTS"]
     KOKORO["Kokoro TTS · local"]
     FFMPEG["MoviePy + ffmpeg · local"]
     YTAPI["YouTube Data API v3"]
@@ -80,32 +93,43 @@ flowchart TD
   RANK -->|"top-N article"| LOCK
   API -->|"custom topic · background task"| LOCK
 
-  LOCK --> S1 --> S2 --> S3 --> S4 --> S5 --> S6
+  LOCK --> S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> S8
   RENDER -.->|"mutates on every stage"| STATUS
   STATUS -->|"polled"| API
 
   FETCH --> ETRSS
   S1 --> GEMINI
-  S2 --> PEXELS
-  S2 -.->|"no match → fallback"| GEMINI
-  S3 --> KOKORO
+  S2 --> GBIMG
+  S2 -.->|"no asset → fallback"| PEXELS
+  PEXELS -.->|"no match → fallback"| GEMINI
+  S3 --> GBTTS
+  S3 -.->|"no cloud key → fallback"| KOKORO
   S5 --> FFMPEG
   S6 --> FFMPEG
-  S6 --> STORE
-  S6 -->|"if auto-publish"| YT
+
+  S7 --> INGEST --> MANIFEST --> EMBED
+  MANIFEST --> SINK
+  S8 --> B2
+  S7 -.-> SCRATCH
+  SINK --> B2
+  S8 -->|"local copy dropped"| SCRATCH
+  S8 -->|"if auto-publish"| YT
   YT --> YTAPI
-  STORE --> STATIC
+
+  LIB -->|"presigned GET"| B2
+  API -->|"/provenance · verify on read"| B2
 
   classDef box fill:#eeeaff,stroke:#7a6fd0,color:#2f2a55;
   classDef store fill:#e6f0ff,stroke:#5b7fc7,color:#22354f;
-  class HERO,AUTO,PIPE,LIB,API,STATIC,LIFE,SCHED,FETCH,RANK,S1,S2,S3,S4,S5,S6,STATUS,LOCK,YT,ETRSS,GEMINI,PEXELS,KOKORO,FFMPEG,YTAPI box;
-  class SEEN,STORE store;
+  class HERO,AUTO,PIPE,LIB,API,STATIC,LIFE,SCHED,FETCH,RANK,S1,S2,S3,S4,S5,S6,S7,S8,STATUS,LOCK,YT,ETRSS,GEMINI,GBIMG,PEXELS,GBTTS,KOKORO,FFMPEG,YTAPI,INGEST,MANIFEST,EMBED,SINK box;
+  class SEEN,B2,SCRATCH store;
 
   style FE fill:#fdfde8,stroke:#cfcf9a
   style GWL fill:#fdfde8,stroke:#cfcf9a
   style SENSE fill:#fdfde8,stroke:#cfcf9a
   style RENDER fill:#fdfde8,stroke:#cfcf9a
   style OBS fill:#fdfde8,stroke:#cfcf9a
+  style PROV fill:#fdfde8,stroke:#cfcf9a
   style PUB fill:#fdfde8,stroke:#cfcf9a
   style EXT fill:#fdfde8,stroke:#cfcf9a
 ```
@@ -117,12 +141,17 @@ flowchart TD
 | **Client** | Rendering state the backend reports; never simulating it | The UI is a viewer, not a second state machine |
 | **Gateway** | REST surface, static MP4/JPG mount, scheduler lifespan | One entry point; the static mount means finished videos are served without touching Python |
 | **Sense & Rank** | RSS → normalize → dedup → score → top-N | Deterministic and free, so it can run every cycle without LLM cost |
-| **Render** | The 6-stage pipeline, one article at a time | Stages share working directories, so they must be serialized |
+| **Render** | The 8-stage pipeline, one article at a time | Stages share working directories, so they must be serialized |
 | **Observe** | `_render_lock` + `render_status` | The lock enforces serialization; the status dict is the *only* progress truth |
-| **Publish & Store** | YouTube upload, local library | Publishing is optional — a render is complete whether or not it uploads |
-| **AI + Data** | Gemini, Pexels, Kokoro, ffmpeg, YouTube API, ET RSS | Everything the pipeline calls out to; two of them (Kokoro, ffmpeg) run locally and dominate runtime |
+| **Provenance** | Genblaze ingest → manifest → embed → sink | Kept separate from generation: the record is built from the *finished* artefacts, so it describes what was actually shipped, not what was intended |
+| **Publish & Store** | Backblaze B2 library, YouTube upload | B2 is the durable home; local disk is scratch. Publishing is optional — a render is complete whether or not it uploads |
+| **AI + Data** | Genblaze providers, Gemini, Pexels, Kokoro, ffmpeg, YouTube API, ET RSS | Everything the pipeline calls out to; the local ones (Kokoro, ffmpeg) dominate runtime |
 
-**Key property:** the backend is the single source of truth for render state. The frontend never simulates progress — it polls `/videos/status` and renders whatever stage the backend reports.
+**Key properties**
+
+- The backend is the single source of truth for render state. The frontend never simulates progress — it polls `/videos/status` and renders whatever stage the backend reports.
+- **Storage is not a side effect.** B2 is where the library lives; the API resolves `/list`, `/stream` and `/download` against the bucket and hands out presigned URLs. That is what lets the whole app run on a host with no persistent disk.
+- **Every generative dependency is optional.** Genblaze image → Pexels → Gemini; Genblaze TTS → Kokoro; B2 → local disk. The app boots with zero credentials and reports precisely what is missing on `/health`.
 
 ---
 
@@ -135,6 +164,8 @@ flowchart TD
 | [`app/api/v1/videos.py`](backend/app/api/v1/videos.py) | generate · status · list · download · stream · delete |
 | [`app/api/v1/trends.py`](backend/app/api/v1/trends.py) | scheduler status · ranked preview · manual run |
 | [`app/services/video_service.py`](backend/app/services/video_service.py) | The render pipeline + live status + render lock |
+| [`app/services/genblaze_service.py`](backend/app/services/genblaze_service.py) | Genblaze façade: generation pipelines, ingest → manifest, embed, verify |
+| [`app/services/storage_service.py`](backend/app/services/storage_service.py) | Backblaze B2 library: upload, list, presign, delete |
 | [`app/services/trends_service.py`](backend/app/services/trends_service.py) | RSS fetch, normalization, ranking, dedup state |
 | [`app/services/trends_scheduler.py`](backend/app/services/trends_scheduler.py) | APScheduler job; orchestrates rank → render → publish |
 | [`app/services/youtube_service.py`](backend/app/services/youtube_service.py) | OAuth credential loading/refresh, resumable upload |
@@ -171,7 +202,14 @@ Runs as a FastAPI background task, **serialized by a module-level lock**.
 | 4 | Subtitles | `subtitles` | timings derived from **actual audio durations** |
 | 5 | Assembly | `assembly` | MoviePy: fit → concat → captions → ffmpeg encode |
 | 6 | Thumbnail | — | ffmpeg frame grab → `<name>.jpg` |
-| 7 | Publish | `publish` | YouTube resumable upload (optional) |
+| 7 | Provenance | `provenance` | Genblaze `Pipeline.ingest` → manifest → embed into the MP4 |
+| 8 | Storage | `storage` | Upload every artefact to Backblaze B2, drop the local copy |
+| 9 | Publish | `publish` | YouTube resumable upload (optional) |
+
+Stages 2 and 3 record which source actually served each item (`genblaze` /
+`pexels` / `gemini`, `genblaze` / `kokoro`), and that per-item record is what
+ends up in the manifest — so the provenance reflects the fallbacks that really
+fired, not the configured preference.
 
 ### Concurrency model
 
@@ -220,6 +258,85 @@ TITLE_FONT_SIZE    = max(18, int(TARGET_W * 0.075))
 ```
 
 Captions use `method='caption'` with **auto height** (`size=(w, None)`) so long lines wrap downward instead of being cut off.
+
+---
+
+## 3b. Provenance and durable storage
+
+### Why this layer exists
+
+Short-form AI news video is trivially cheap to produce and, by default, entirely
+unauditable — nothing in the finished MP4 says which model wrote it or where the
+imagery came from. Flux closes that gap: **every render is registered as a
+Genblaze ingest run whose manifest binds the SHA-256 of each artefact to the
+chain of providers and models that produced it.**
+
+### Building the record
+
+The manifest is built from the *finished* artefacts, not from intent:
+
+```python
+result = Pipeline.ingest(
+    assets,                                # mp4 + thumbnail + srt + script
+    source="flux-render-pipeline",
+    source_metadata={"topic": ..., "stages": stages},
+    sink=object_storage_sink,              # writes the run to B2
+    tenant_id=settings.GENBLAZE_TENANT_ID,
+)
+```
+
+`stages` is accumulated as the pipeline runs and records the source that
+*actually* served each stage, including fallbacks. Asset `sha256` and
+`size_bytes` are computed locally before ingest rather than left to the sink —
+that way `Manifest.verify()` succeeds even when B2 is not configured, so
+provenance is not a paid feature of the deployment.
+
+### Two copies, deliberately
+
+| Copy | Where | Role |
+|---|---|---|
+| Sidecar | `flux/library/{stem}/manifest.json` on B2 | **Authoritative.** What `/provenance` reads and re-verifies |
+| Embedded | inside the MP4 (`Mp4Handler.embed`) | Travels with the file — survives download, re-upload, sharing |
+
+Embedding rewrites the container *after* the hashes were computed, so the video
+asset's recorded SHA-256 describes the rendered content rather than the
+annotated file. That is the intended semantic — provenance should assert what
+was generated — but it means the embedded copy cannot be checked with a naive
+`sha256sum` of the final file, which is why the sidecar stays authoritative.
+`embed_manifest` extracts its own write back and returns `False` if the
+container rejected it, rather than claiming a record nobody can read.
+
+### Storage layout
+
+```
+flux/library/{stem}/video.mp4      # served via presigned GET
+                    thumb.jpg
+                    captions.srt
+                    script.json
+                    manifest.json  # provenance, authoritative
+                    meta.json      # library card metadata; written LAST
+flux/runs/{tenant}/{date}/{run_id}/manifest.json
+                                   assets/…        # Genblaze sink
+```
+
+`meta.json` is written last on purpose: a prefix without it is a partially
+uploaded render. Listing additionally requires `video.mp4` to exist before an
+entry is surfaced, so a failed upload never appears as a broken library card.
+
+Listing is one paginated `ListObjectsV2` over the library prefix, grouped by
+stem; `meta.json` is read once per video and cached for the process lifetime
+(it is immutable after write), which keeps `/videos/list` to a single round trip
+in the steady state.
+
+### Failure posture
+
+Storage and provenance are wrapped so that **neither can fail a render**. If B2
+is unreachable the video stays on local disk and the library still lists it with
+`storage: "local"`; if the manifest cannot be built the video is stored anyway
+with `has_provenance: false`. The one deliberate exception is inside
+`upload_render`: if the *video* upload fails after the sink was reported
+available, that raises, because silently reporting a B2-backed library that has
+no video in it is worse than a logged failure.
 
 ---
 
@@ -284,9 +401,18 @@ State lives in `App.jsx`; sections are presentational.
 | `Hero` | pitch, demo video, pipeline stage strip |
 | `AutomationSection` | top-N selector, auto-publish toggle, Run Automation, ranked articles |
 | `PipelineSection` | live stage visualization |
-| `LibrarySection` / `VideoCard` | newest-first grid, thumbnails, actions |
+| `LibrarySection` / `VideoCard` | newest-first grid, B2 + verified badges, actions |
 | `VideoPlayerModal` | fullscreen 9:16-safe player |
+| `ProvenanceModal` | manifest viewer: verification banner, generation chain, per-artefact SHA-256, raw JSON |
 | `ConfirmDialog` | animated delete confirmation |
+
+### Provenance in the UI
+
+The card badges come from `/videos/list` (cheap — the values are denormalized
+into `meta.json` at upload time, so listing never reads a manifest). Opening
+**Provenance** hits `/videos/{name}/provenance`, which re-runs
+`Manifest.verify()` server-side on read rather than trusting the stored flag —
+the badge is a cached hint, the panel is the real check.
 
 ### The render watcher
 
@@ -351,6 +477,8 @@ Remaining levers: drop fps 24→20 and remove per-clip fades (~15–20 s), or mo
 
 - **Single-process state.** The render lock and live status are in-memory; horizontal scaling would need Redis or a task queue.
 - **One render at a time.** Deliberate (shared working directories), but caps throughput.
-- **Local library storage.** Videos live on the server filesystem; ephemeral hosts need a mounted volume.
+- **Embedded-manifest hash semantics.** The recorded video SHA-256 is of the pre-embed bytes (see §3b) — the sidecar on B2 is the authoritative copy.
+- **No manifest signing.** `Manifest.signature` is left unset; the canonical hash proves integrity but not authorship. Signing would be the next step toward a C2PA-style claim.
+- **Presigned URL churn.** Every `/videos/list` re-signs every entry. Fine at library scale; a large library would want cached URLs keyed to expiry.
 - **Simulated stage granularity.** Progress is per-stage, not percentage-within-stage — MoviePy's encode progress isn't surfaced.
-- **Python 3.12 pin.** torch/Kokoro/spaCy wheel availability.
+- **Python 3.12 pin.** torch/Kokoro/spaCy wheel availability — avoidable by running narration through Genblaze cloud TTS.

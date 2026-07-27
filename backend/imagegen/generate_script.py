@@ -20,8 +20,13 @@ class VideoScriptGenerator:
         self.model = model
         self.ollama_model = ollama_model
         self.ollama_base_url = ollama_base_url.rstrip("/")
-        # Only create the Gemini client when actually using Gemini.
-        self.client = genai.Client(api_key=api_key) if self.provider == "gemini" else None
+        # Only create the Gemini client when actually using Gemini AND a key is
+        # present. A missing key must not crash construction — the service is
+        # instantiated at import time, and the app has to boot far enough to
+        # report the missing key on /health instead of failing to start.
+        self.client = None
+        if self.provider == "gemini" and api_key:
+            self.client = genai.Client(api_key=api_key)
 
         self.system_prompt_segmentation = """
         You are a professional video script segmenter.  
@@ -131,6 +136,12 @@ class VideoScriptGenerator:
         """
         if self.provider == "ollama":
             return self._generate_ollama(prompt, system_prompt)
+
+        if self.client is None:
+            raise RuntimeError(
+                "No script model configured. Set GEMINI_API_KEY, or set "
+                "SCRIPT_PROVIDER=ollama to generate scripts locally."
+            )
 
         transient_markers = ("503", "429", "500", "UNAVAILABLE", "overloaded", "high demand", "RESOURCE_EXHAUSTED")
         last_error = None

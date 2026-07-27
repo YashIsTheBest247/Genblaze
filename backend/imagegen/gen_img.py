@@ -1,13 +1,19 @@
 """
 Image Sourcing Module - Path-Agnostic Version
-Primary source: Pexels stock photo search.
-Fallback: Google Gemini image generation (used only when Pexels has no match).
+
+Three sources, tried in order:
+  1. Genblaze generation (Google Imagen / GMI Cloud) - a real generative step,
+     recorded in the run's provenance manifest.
+  2. Pexels stock photo search - fast, free, good for real news subjects.
+  3. Direct Google Gemini image generation - last-resort fallback.
+
+`IMAGE_PROVIDER` pins a single source when you don't want the cascade.
 All paths are passed as parameters - no hardcoded paths.
 """
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Callable, List, Optional, Sequence
 
 import requests
 from google import genai
@@ -155,18 +161,27 @@ def main_generate_images(
     pexels_api_key: str = "",
     gemini_model: str = "gemini-2.5-flash-image",
     aspect_ratio: str = "1:1",
+    image_provider: str = "auto",
+    genblaze_generator: Optional[Callable[[List[str], List[Path], str], Sequence[Optional[Path]]]] = None,
+    source_log: Optional[dict] = None,
 ) -> bool:
     """
     Process the script JSON and source one image per scene.
-    Pexels is the primary source; Gemini is the fallback.
 
     Args:
         script_path: Path to the script JSON file
         images_output_path: Directory where images should be saved
-        gemini_api_key: Gemini API key (fallback image generation)
-        pexels_api_key: Pexels API key (primary image source)
+        gemini_api_key: Gemini API key (direct fallback image generation)
+        pexels_api_key: Pexels API key (stock image source)
         gemini_model: Gemini image model used on fallback
         aspect_ratio: Desired image aspect ratio
+        image_provider: "auto" (genblaze -> pexels -> gemini) or a pinned source
+            ("genblaze", "pexels", "gemini")
+        genblaze_generator: callable(prompts, out_paths, aspect_ratio) returning
+            a path per prompt (None where that scene failed). Supplied by the
+            video service so this module stays free of app imports.
+        source_log: optional dict mutated with which source served each scene —
+            the render's provenance record reads this back.
 
     Returns:
         True if at least one image was sourced, False otherwise
@@ -191,42 +206,79 @@ def main_generate_images(
         return False
 
     scenes = data["visual_script"]
+    provider = (image_provider or "auto").lower()
+    sources: dict = source_log if source_log is not None else {}
 
-    def _source_one(idx_scene):
-        """Fetch + save one scene's image. Returns True on success."""
-        idx, scene = idx_scene
+    # Resolve one output path per scene up front so every source writes to the
+    # same place and "which scenes are still missing" is a simple exists() check.
+    targets: List[Path] = []
+    prompts: List[str] = []
+    for idx, scene in enumerate(scenes):
+        timestamp = scene.get("timestamp_start", f"{idx:03d}")
+        scene_id = str(timestamp).replace(":", "-")
+        targets.append(images_output_path / f"scene_{scene_id}.jpg")
+        prompts.append(scene.get("prompt") or "")
+
+    # --- Pass 1: Genblaze generation -------------------------------------
+    if genblaze_generator and provider in ("auto", "genblaze"):
+        wanted = [(i, p) for i, p in enumerate(prompts) if p]
+        if wanted:
+            try:
+                produced = genblaze_generator(
+                    [p for _, p in wanted],
+                    [targets[i] for i, _ in wanted],
+                    aspect_ratio,
+                )
+                for (idx, _), path in zip(wanted, produced or []):
+                    if path and Path(path).exists():
+                        sources[str(idx)] = "genblaze"
+            except Exception as e:  # noqa: BLE001 - fall through to stock/direct
+                print(f"Genblaze image generation unavailable: {e}")
+
+    # --- Pass 2: Pexels / direct Gemini for anything still missing --------
+    def _source_one(idx: int) -> bool:
+        target = targets[idx]
+        if target.exists() and target.stat().st_size > 0:
+            return True  # already produced by Genblaze
+
+        prompt = prompts[idx]
+        if not prompt:
+            print(f"Scene {idx}: Missing prompt, skipping")
+            return False
+
         try:
-            prompt = scene.get("prompt")
-            if not prompt:
-                print(f"Scene {idx}: Missing prompt, skipping")
-                return False
-
-            timestamp = scene.get("timestamp_start", f"{idx:03d}")
-            scene_id = timestamp.replace(":", "-")
-
             print(f"Sourcing image for prompt: {prompt}")
-            image_bytes = get_image_for_prompt(
-                prompt,
-                pexels_api_key=pexels_api_key,
-                gemini_api_key=gemini_api_key,
-                aspect_ratio=aspect_ratio,
-                gemini_model=gemini_model,
-            )
+            image_bytes = None
+            used = None
+
+            if provider in ("auto", "pexels"):
+                image_bytes = search_pexels_image(prompt, pexels_api_key, aspect_ratio)
+                if image_bytes:
+                    used = "pexels"
+
+            if not image_bytes and provider in ("auto", "gemini"):
+                image_bytes = generate_gemini_image(prompt, gemini_api_key, gemini_model)
+                if image_bytes:
+                    used = "gemini"
+
             if not image_bytes:
                 print(f"No image obtained for prompt: {prompt}")
                 return False
 
-            return save_image(image_bytes, images_output_path / f"scene_{scene_id}.jpg")
+            if save_image(image_bytes, target):
+                sources[str(idx)] = used
+                return True
+            return False
         except Exception as e:  # noqa: BLE001 - one scene shouldn't kill the batch
             print(f"Error processing scene {idx}: {e}")
             return False
 
-    # Fetch every scene's image CONCURRENTLY (Pexels is a plain HTTP GET, so a
+    # Fetch remaining scenes CONCURRENTLY (Pexels is a plain HTTP GET, so a
     # sequential loop with sleeps was the bottleneck). Bounded pool keeps the
     # Gemini image fallback from hammering the API.
     max_workers = min(4, max(1, len(scenes)))
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        results = list(pool.map(_source_one, enumerate(scenes)))
+        results = list(pool.map(_source_one, range(len(scenes))))
 
     success_count = sum(1 for ok in results if ok)
     print(f"Image sourcing completed. {success_count}/{len(scenes)} images obtained.")

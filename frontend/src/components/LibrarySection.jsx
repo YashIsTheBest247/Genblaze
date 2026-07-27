@@ -9,12 +9,17 @@ export function LibrarySection({
     newFilename,
     onRequestDelete,
     onPlay,
+    onShowProvenance,
+    storageStatus,
 }) {
+    const b2 = storageStatus?.backblaze_b2;
+    const genblaze = storageStatus?.genblaze;
     const query = (searchQuery || '').trim().toLowerCase();
     const filtered = query
         ? videos.filter(
               (video) =>
                   video.name.toLowerCase().includes(query) ||
+                  (video.topic || '').toLowerCase().includes(query) ||
                   titleFromFilename(video.name).toLowerCase().includes(query)
           )
         : videos;
@@ -37,6 +42,29 @@ export function LibrarySection({
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted">
                 AI-generated videos from Economic Times articles appear here automatically
             </p>
+
+            {/* Where the media actually lives — durable storage + provenance status. */}
+            {storageStatus && (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="chip">
+                        <span
+                            className={`h-1.5 w-1.5 rounded-full ${
+                                b2?.available ? 'bg-accent' : 'bg-amber-400'
+                            }`}
+                        />
+                        {b2?.available
+                            ? `Backblaze B2 · ${b2.bucket}`
+                            : 'Backblaze B2 not configured — storing locally'}
+                    </span>
+                    {genblaze?.enabled && (
+                        <span className="chip">
+                            <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                            Genblaze provenance
+                            {genblaze.image_provider ? ` · ${genblaze.image_provider}` : ''}
+                        </span>
+                    )}
+                </div>
+            )}
 
             <div className="mt-6 border-t border-tint/10 pt-8">
                 {filtered.length === 0 && !showAwaiting ? (
@@ -70,6 +98,7 @@ export function LibrarySection({
                                 isNew={video.name === newFilename}
                                 onRequestDelete={onRequestDelete}
                                 onPlay={onPlay}
+                                onShowProvenance={onShowProvenance}
                             />
                         ))}
                     </div>

@@ -9,12 +9,15 @@ function formatDuration(seconds) {
     return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
 }
 
-export function VideoCard({ video, isNew, onRequestDelete, onPlay }) {
-    const title = titleFromFilename(video.name);
+export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvenance }) {
+    // The backend sends the human topic for B2-backed videos; older local-only
+    // files only have a filename to derive a title from.
+    const title = video.topic || titleFromFilename(video.name);
     const src = mediaUrl(video.path);
     const poster = video.thumbnail ? mediaUrl(video.thumbnail) : undefined;
     const [duration, setDuration] = useState(null);
     const [menuOpen, setMenuOpen] = useState(false);
+    const onB2 = video.storage === 'b2';
 
     return (
         <article className="group flex flex-col">
@@ -51,6 +54,29 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay }) {
                     </span>
                 )}
 
+                {/* storage + provenance badges */}
+                <span className="pointer-events-none absolute right-3 top-3 flex items-center gap-1.5">
+                    {onB2 && (
+                        <span
+                            title="Stored durably on Backblaze B2"
+                            className="rounded bg-black/70 px-1.5 py-1 text-[0.55rem] font-bold uppercase tracking-[0.1em] text-white backdrop-blur-sm"
+                        >
+                            B2
+                        </span>
+                    )}
+                    {video.verified && (
+                        <span
+                            title="Genblaze manifest verified"
+                            className="grid h-[22px] w-[22px] place-items-center rounded bg-black/70 text-accent backdrop-blur-sm"
+                        >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
+                                <path d="M12 3 5 6v5.5c0 4.3 2.9 8.3 7 9.5 4.1-1.2 7-5.2 7-9.5V6z" />
+                                <path d="m9 12 2 2 4-4" />
+                            </svg>
+                        </span>
+                    )}
+                </span>
+
                 {duration && (
                     <span className="pointer-events-none absolute bottom-3 right-3 rounded bg-black/75 px-2 py-1 text-[0.65rem] font-semibold text-white">
                         {formatDuration(duration)}
@@ -63,7 +89,8 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay }) {
                 <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold text-txt">{title}</h3>
                     <p className="mt-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-muted">
-                        Generated · Vertical short
+                        {onB2 ? 'Backblaze B2' : 'Local'} · Vertical short
+                        {video.has_provenance ? ' · Provenance' : ''}
                     </p>
                 </div>
 
@@ -91,6 +118,13 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay }) {
                             >
                                 Download
                             </a>
+                            <button
+                                type="button"
+                                onClick={() => onShowProvenance?.(video)}
+                                className="block w-full px-3 py-2 text-left text-xs font-medium text-txt transition-colors hover:bg-tint/[0.08]"
+                            >
+                                Provenance
+                            </button>
                             <button
                                 type="button"
                                 onClick={() => onRequestDelete?.({ name: video.name, title })}

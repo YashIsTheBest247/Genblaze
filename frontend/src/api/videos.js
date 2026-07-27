@@ -26,3 +26,13 @@ export async function deleteVideo(name) {
         method: 'DELETE',
     });
 }
+
+// Genblaze provenance manifest for one video, re-verified server-side on read.
+export async function getProvenance(name) {
+    return requestJson(`${videosBaseUrl}/${encodeURIComponent(name)}/provenance`);
+}
+
+// Where media is stored (Backblaze B2) and whether Genblaze is active.
+export async function getStorageStatus() {
+    return requestJson(`${videosBaseUrl}/storage`);
+}
