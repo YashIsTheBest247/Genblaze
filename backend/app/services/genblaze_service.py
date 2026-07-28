@@ -103,6 +103,8 @@ class GenblazeService:
             "import_error": self._import_error,
             "image_provider": self._image_provider_name(),
             "image_model": settings.GENBLAZE_IMAGE_MODEL if self._image_provider_name() else None,
+            # Human-readable description of the actual visual cascade in effect.
+            "visual_flow": self._visual_flow(),
             "tts_provider": "gmicloud" if self._use_genblaze_tts() else "kokoro",
             "tts_model": settings.GENBLAZE_TTS_MODEL if self._use_genblaze_tts() else None,
             "embed_manifest": settings.GENBLAZE_EMBED_MANIFEST,
@@ -155,17 +157,52 @@ class GenblazeService:
     # -- provider selection -------------------------------------------
 
     def _image_provider_name(self) -> Optional[str]:
-        """Which Genblaze provider (if any) should generate scene images."""
-        if not self.enabled or settings.IMAGE_PROVIDER.lower() in ("pexels", "gemini"):
+        """
+        Which Genblaze provider (if any) should generate scene images.
+
+        Returns None unless IMAGE_PROVIDER is explicitly "genblaze" — the
+        default visual flow is Pexels then Gemini, and Genblaze generation is
+        opt-in. Routing is then by model id:
+          gemini-*-image  -> our GeminiImageProvider (generateContent)
+          imagen-*        -> genblaze_google.ImagenProvider (predict)
+          anything else   -> GMI Cloud
+        """
+        if not self.enabled or settings.IMAGE_PROVIDER.lower() != "genblaze":
             return None
         model = settings.GENBLAZE_IMAGE_MODEL.lower()
+        if model.startswith("gemini") and "image" in model:
+            return "google-gemini-image" if settings.GEMINI_API_KEY else None
         if model.startswith("imagen"):
-            return "google" if settings.GEMINI_API_KEY else None
+            return "google-imagen" if settings.GEMINI_API_KEY else None
         return "gmicloud" if settings.gmi_configured else None
+
+    def _visual_flow(self) -> str:
+        """
+        The image-source cascade currently in effect, for /health and the UI.
+
+        ASCII arrows deliberately: this string reaches Windows consoles through
+        logs, where a U+2192 raises UnicodeEncodeError under cp1252.
+        """
+        choice = settings.IMAGE_PROVIDER.lower()
+        if choice == "pexels":
+            return "pexels"
+        if choice == "gemini":
+            return "gemini"
+        if choice == "genblaze":
+            provider = self._image_provider_name()
+            head = f"genblaze:{provider}" if provider else "genblaze:unavailable"
+            return f"{head} -> pexels -> gemini"
+        return "pexels -> gemini"
 
     def _build_image_provider(self, output_dir: Path):
         name = self._image_provider_name()
-        if name == "google":
+        if name == "google-gemini-image":
+            from app.services.genblaze_gemini_image import GeminiImageProvider
+
+            return GeminiImageProvider(
+                api_key=settings.GEMINI_API_KEY, output_dir=output_dir
+            ), name
+        if name == "google-imagen":
             from genblaze_google import ImagenProvider
 
             return ImagenProvider(api_key=settings.GEMINI_API_KEY, output_dir=output_dir), name
@@ -246,9 +283,17 @@ class GenblazeService:
         if not prompts or not self.enabled:
             return empty
 
-        work_dir = Path(output_paths[0]).parent if output_paths else Path(".")
+        # The provider must write into the system temp directory: the storage
+        # sink refuses to read file:// assets from anywhere else, so writing
+        # straight into resources/images would make every sink upload fail.
+        # Generated images are copied to their real targets afterwards.
+        import shutil
+        import tempfile
+
+        work_dir = Path(tempfile.mkdtemp(prefix="flux-visuals-"))
         provider, provider_name = self._build_image_provider(work_dir)
         if provider is None:
+            shutil.rmtree(work_dir, ignore_errors=True)
             return empty
 
         width, height = _ASPECT_SIZES.get(aspect_ratio, _ASPECT_SIZES["1:1"])
@@ -284,25 +329,29 @@ class GenblazeService:
                 raise_on_failure=False,
                 timeout=180,
             )
+
+            # Copy the staged images out to their real scene paths before the
+            # staging directory goes away.
+            paths: List[Optional[Path]] = []
+            for index, step in enumerate(result.run.steps):
+                asset = step.assets[0] if getattr(step, "assets", None) else None
+                dest = Path(output_paths[index]) if index < len(output_paths) else None
+                paths.append(self._materialize(asset, dest) if asset and dest else None)
+            paths.extend([None] * (len(prompts) - len(paths)))
+
+            return GenerationResult(
+                paths=paths,
+                run_id=result.run.run_id,
+                manifest_uri=result.manifest.manifest_uri,
+                provider=provider_name,
+                model=model,
+            )
         except Exception as e:  # noqa: BLE001
             logger.warning("Genblaze image generation failed: %s", e)
             empty.error = str(e)
             return empty
-
-        paths: List[Optional[Path]] = []
-        for index, step in enumerate(result.run.steps):
-            asset = step.assets[0] if getattr(step, "assets", None) else None
-            dest = Path(output_paths[index]) if index < len(output_paths) else None
-            paths.append(self._materialize(asset, dest) if asset and dest else None)
-        paths.extend([None] * (len(prompts) - len(paths)))
-
-        return GenerationResult(
-            paths=paths,
-            run_id=result.run.run_id,
-            manifest_uri=result.manifest.manifest_uri,
-            provider=provider_name,
-            model=model,
-        )
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
     def synthesize_speech(
         self,
@@ -391,15 +440,28 @@ class GenblazeService:
         if not self.enabled:
             return None
 
+        # Genblaze refuses to read file:// assets from outside the system temp
+        # directory — a deliberate arbitrary-file-read guard, with no override
+        # plumbed through the sink. Our artefacts live under static/ and
+        # resources/, so stage copies in temp for the duration of the ingest.
+        # The bytes are identical, so every SHA-256 in the manifest still
+        # describes the real artefact.
+        staging: Optional[Path] = None
         try:
+            import shutil
+            import tempfile
+
             from genblaze_core import Pipeline
 
+            staging = Path(tempfile.mkdtemp(prefix="flux-provenance-"))
             assets = []
             for path, role, media_type in artefacts:
                 path = Path(path)
                 if not path.exists() or path.stat().st_size == 0:
                     continue
-                assets.append(self.make_asset(path, role=role, media_type=media_type))
+                staged = staging / path.name
+                shutil.copy2(path, staged)
+                assets.append(self.make_asset(staged, role=role, media_type=media_type))
 
             if not assets:
                 return None
@@ -431,6 +493,11 @@ class GenblazeService:
         except Exception as e:  # noqa: BLE001
             logger.error("Failed to record provenance manifest: %s", e, exc_info=True)
             return None
+        finally:
+            if staging is not None:
+                import shutil as _shutil
+
+                _shutil.rmtree(staging, ignore_errors=True)
 
     def embed_manifest(self, video_path: Path, manifest: Dict[str, Any]) -> bool:
         """

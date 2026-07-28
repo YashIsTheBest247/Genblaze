@@ -71,8 +71,8 @@ flowchart TD
     direction LR
     ETRSS["Economic Times RSS"]
     GEMINI["Google Gemini 2.5 Flash<br/>script · image fallback"]
-    GBIMG["Genblaze image<br/>Imagen · GMI Cloud"]
-    PEXELS["Pexels stock search"]
+    PEXELS["Pexels stock search<br/>primary visual source"]
+    GBIMG["Genblaze image · opt-in<br/>Gemini image · GMI Cloud"]
     GBTTS["Genblaze audio<br/>GMI Cloud TTS"]
     KOKORO["Kokoro TTS · local"]
     FFMPEG["MoviePy + ffmpeg · local"]
@@ -99,9 +99,9 @@ flowchart TD
 
   FETCH --> ETRSS
   S1 --> GEMINI
-  S2 --> GBIMG
-  S2 -.->|"no asset → fallback"| PEXELS
+  S2 --> PEXELS
   PEXELS -.->|"no match → fallback"| GEMINI
+  S2 -.->|"opt-in: IMAGE_PROVIDER=genblaze"| GBIMG
   S3 --> GBTTS
   S3 -.->|"no cloud key → fallback"| KOKORO
   S5 --> FFMPEG
@@ -151,7 +151,8 @@ flowchart TD
 
 - The backend is the single source of truth for render state. The frontend never simulates progress — it polls `/videos/status` and renders whatever stage the backend reports.
 - **Storage is not a side effect.** B2 is where the library lives; the API resolves `/list`, `/stream` and `/download` against the bucket and hands out presigned URLs. That is what lets the whole app run on a host with no persistent disk.
-- **Every generative dependency is optional.** Genblaze image → Pexels → Gemini; Genblaze TTS → Kokoro; B2 → local disk. The app boots with zero credentials and reports precisely what is missing on `/health`.
+- **Every generative dependency is optional.** Pexels → Gemini for visuals; Genblaze TTS → Kokoro for narration; B2 → local disk. The app boots with zero credentials and reports precisely what is missing on `/health`.
+- **Stock beats synthesis for news.** Pexels is the primary visual source by design: a real photograph of a real subject is more credible in a news short than a generated frame, and it costs one fast HTTP GET instead of a per-image generation fee. Genblaze generation is available (`IMAGE_PROVIDER=genblaze`) for topics with no usable stock imagery, but it does not preempt the default path.
 
 ---
 
@@ -165,6 +166,7 @@ flowchart TD
 | [`app/api/v1/trends.py`](backend/app/api/v1/trends.py) | scheduler status · ranked preview · manual run |
 | [`app/services/video_service.py`](backend/app/services/video_service.py) | The render pipeline + live status + render lock |
 | [`app/services/genblaze_service.py`](backend/app/services/genblaze_service.py) | Genblaze façade: generation pipelines, ingest → manifest, embed, verify |
+| [`app/services/genblaze_gemini_image.py`](backend/app/services/genblaze_gemini_image.py) | Custom Genblaze `SyncProvider` for Gemini `generateContent` image models |
 | [`app/services/storage_service.py`](backend/app/services/storage_service.py) | Backblaze B2 library: upload, list, presign, delete |
 | [`app/services/trends_service.py`](backend/app/services/trends_service.py) | RSS fetch, normalization, ranking, dedup state |
 | [`app/services/trends_scheduler.py`](backend/app/services/trends_scheduler.py) | APScheduler job; orchestrates rank → render → publish |
@@ -197,7 +199,7 @@ Runs as a FastAPI background task, **serialized by a module-level lock**.
 |---|---|---|---|
 | 0 | Clean working dirs | — | wipes `resources/images`, `resources/audio` |
 | 1 | Script | `script` | one LLM call → JSON (`audio_script` + `visual_script`) |
-| 2 | Visuals | `image` | Pexels per scene, **4-way thread pool**, Gemini fallback |
+| 2 | Visuals | `image` | Pexels per scene, **4-way thread pool**, Gemini generation fallback (Genblaze generation opt-in) |
 | 3 | Narration | `voice` | Kokoro TTS → one `.wav` per segment |
 | 4 | Subtitles | `subtitles` | timings derived from **actual audio durations** |
 | 5 | Assembly | `assembly` | MoviePy: fit → concat → captions → ffmpeg encode |
@@ -305,6 +307,31 @@ was generated — but it means the embedded copy cannot be checked with a naive
 `sha256sum` of the final file, which is why the sidecar stays authoritative.
 `embed_manifest` extracts its own write back and returns `False` if the
 container rejected it, rather than claiming a record nobody can read.
+
+### Two constraints the SDK imposes, and how Flux satisfies them
+
+**1. `file://` assets must live under the system temp directory.**
+`genblaze_core.storage.transfer` checks every local asset path against a
+hardcoded `ALLOWED_FILE_ROOTS` (temp only) — an arbitrary-file-read guard, with
+no override plumbed through `ObjectStorageSink`. Flux's artefacts live under
+`static/` and `resources/`, so **both** paths that hand local files to Genblaze
+stage copies in temp first: `record_render` for the ingest, and `generate_images`
+for the provider's output directory. The staged bytes are identical, so every
+SHA-256 in the manifest still describes the real artefact.
+
+This is easy to miss in tests — pytest's `tmp_path` *is* inside the temp
+directory, so a naive fixture passes while production fails. `tests/` carries an
+explicit outside-temp fixture for exactly this reason.
+
+**2. Google's image adapter is Imagen-only, and Imagen is closed.**
+`genblaze_google.ImagenProvider` calls the `:predict` endpoint; every `imagen-*`
+model now answers *"no longer available to new users"* for keys created after the
+cutover, and Google moved image generation to `gemini-*-image` on
+`generateContent`. `SyncProvider` is a documented extension point with one
+abstract method, so
+[`genblaze_gemini_image.py`](backend/app/services/genblaze_gemini_image.py)
+implements it against the current API — the assets then flow through the same
+Pipeline, sink and manifest as any first-party provider.
 
 ### Storage layout
 

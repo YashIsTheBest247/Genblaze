@@ -1,0 +1,16 @@
+1
+00:00:02,000 --> 00:00:06,125
+The Reserve Bank of India has decided to keep the
+
+2
+00:00:06,125 --> 00:00:08,600
+repo rate unchanged at 6.5 percent.
+
+3
+00:00:08,600 --> 00:00:13,680
+This decision aims to manage inflation while supporting economic growth.
+
+4
+00:00:13,680 --> 00:00:17,560
+For borrowers, this means stable loan interest rates for now.
+

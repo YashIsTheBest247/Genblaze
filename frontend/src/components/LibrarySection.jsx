@@ -60,7 +60,7 @@ export function LibrarySection({
                         <span className="chip">
                             <span className="h-1.5 w-1.5 rounded-full bg-accent" />
                             Genblaze provenance
-                            {genblaze.image_provider ? ` · ${genblaze.image_provider}` : ''}
+                            {genblaze.visual_flow ? ` · visuals: ${genblaze.visual_flow}` : ''}
                         </span>
                     )}
                 </div>

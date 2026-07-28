@@ -1,3 +1,19 @@
+---
+title: Flux
+emoji: 🎬
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 8000
+pinned: false
+license: mit
+short_description: Provenance-aware AI news-to-video, stored on Backblaze B2
+---
+
+<!-- The block above is Hugging Face Spaces configuration; it tells the Space to
+     build the root Dockerfile and expose port 8000. GitHub renders it as a
+     table, which is harmless. Do not remove it or the Space will not start. -->
+
 # Flux — Provenance-Aware News-to-Video Automation
 
 Flux monitors **Economic Times** RSS feeds, ranks the trending stories, and automatically turns the top ones into vertical (9:16) short-form videos — script, visuals, narration, subtitles, thumbnail. Every render is orchestrated and signed through the **[Genblaze](https://github.com/backblaze-labs/genblaze)** SDK and stored durably on **Backblaze B2**, then optionally published to YouTube. Unattended, on a schedule.
@@ -16,8 +32,9 @@ News in → a verifiable MP4 in object storage, in about two minutes.
 - **Provenance on every render** — a canonical, SHA-256-bound **Genblaze manifest** recording provider, model and parameters for each stage; written to B2 *and* embedded into the MP4 container, so the file carries its own record wherever it goes
 - **Verifiable in the UI** — the library shows a verified shield per video; open **Provenance** to see the generation chain, per-artefact hashes and a live re-verification
 - **Durable media library on Backblaze B2** — MP4, thumbnail, captions, script and manifest all land in the bucket; playback runs off short-lived presigned URLs, so the bucket stays private and the library survives an ephemeral host
-- **Multi-provider generation via Genblaze** — visuals through Google Imagen or GMI Cloud, narration through GMI Cloud/ElevenLabs/MiniMax; swapping model or provider is one env var
-- **Graceful degradation** — every generative stage has a fallback (Genblaze → Pexels → Gemini for visuals; cloud TTS → local Kokoro for narration), and the app boots and reports readiness even with nothing configured
+- **Visuals from Pexels, with generation as the fallback** — real stock photography is the primary source for real news subjects; Gemini image generation covers scenes Pexels can't match. Setting `IMAGE_PROVIDER=genblaze` puts Genblaze generation (GMI Cloud / Gemini image) at the front of that chain instead
+- **Multi-provider generation via Genblaze** — narration through GMI Cloud/ElevenLabs/MiniMax, optional generative visuals; swapping model or provider is one env var
+- **Graceful degradation** — every stage has a fallback (Pexels → Gemini for visuals; cloud TTS → local Kokoro for narration), and the app boots and reports readiness even with nothing configured
 - **One-click automation** — pick how many top articles to process, toggle auto-publish, hit *Run Automation*
 - **Live pipeline view** — the UI shows the **real** backend stage (Fetch → Trend → Script → Visuals → Narration → Subtitles → Assembly → Provenance → Backblaze B2 → Publish)
 - **Pluggable script LLM** — **Gemini** (free tier, thinking disabled for speed) or **Ollama** (local, unlimited)
@@ -80,7 +97,7 @@ Net effect: **recent stories echoed across multiple ET sections rank highest.** 
 | **Media orchestration + provenance** | **Genblaze** (`genblaze-core`, `genblaze-google`, `genblaze-gmicloud`) |
 | **Durable storage** | **Backblaze B2** via `genblaze-s3` (S3-compatible, presigned URLs) |
 | Script LLM | Google Gemini 2.5 Flash (`google-genai`) **or** Ollama (local) |
-| Visuals | Genblaze (Imagen / GMI Cloud) → Pexels → Gemini fallback |
+| Visuals | Pexels stock search → Gemini image generation fallback (Genblaze generation opt-in) |
 | Narration | Genblaze cloud TTS (GMI Cloud) **or** Kokoro TTS (PyTorch, CPU) |
 | Assembly | MoviePy + ffmpeg (`imageio-ffmpeg`), Pillow |
 | Publishing | YouTube Data API v3 (`google-api-python-client`) |
@@ -195,8 +212,8 @@ ollama pull llama3.2
 | `GENBLAZE_KEY_STRATEGY` | `hierarchical` | `hierarchical` or `content_addressable` |
 | `GENBLAZE_EMBED_MANIFEST` | `true` | Write the manifest into the MP4 |
 | `GMI_API_KEY` | — | Optional — unlocks GMI Cloud image/audio models |
-| `IMAGE_PROVIDER` | `auto` | `auto` (genblaze→pexels→gemini), `genblaze`, `pexels`, `gemini` |
-| `GENBLAZE_IMAGE_MODEL` | `imagen-3.0-fast-generate-001` | `imagen-*` → Google, anything else → GMI Cloud |
+| `IMAGE_PROVIDER` | `auto` | `auto` (pexels→gemini), `genblaze` (genblaze→pexels→gemini), `pexels`, `gemini` |
+| `GENBLAZE_IMAGE_MODEL` | `gemini-2.5-flash-image` | `gemini-*-image` → Gemini `generateContent`, `imagen-*` → Imagen, else → GMI Cloud |
 | `TTS_PROVIDER` | `auto` | `auto`, `genblaze`, `kokoro` |
 | `GENBLAZE_TTS_MODEL` | `minimax-tts-speech-2.6-turbo` | Cloud narration model |
 | **Script** | | |
@@ -285,7 +302,9 @@ Runs as-is on **Hugging Face Spaces** (free, 16 GB RAM — recommended), **Rende
 - **Python 3.12 only** — torch/Kokoro/spaCy lack wheels for newer versions. (Cloud TTS via `GMI_API_KEY` removes torch from the critical path.)
 - **One render at a time** — enforced by a lock; concurrent requests queue (renders share working directories).
 - **Gemini free tier is rate-limited** (~20 req/min). Script generation uses a single call; switch to Ollama to avoid limits entirely.
-- **Imagen needs a billed Google key.** On a free-tier key the Genblaze image step yields nothing, so Flux trips a one-shot circuit breaker and falls through to Pexels/Gemini for the rest of the process rather than paying that latency on every scene.
+- **Google image generation needs billing — verified, not assumed.** Every `imagen-*` model now returns *"no longer available to new users"* on the Gemini API, and `gemini-*-image` reports `generate_content_free_tier_requests, limit: 0`. So on a free Gemini key Genblaze cannot produce visuals at all, and Flux trips a one-shot circuit breaker and serves scenes from Pexels for the rest of the process rather than paying that latency on every scene. Enable billing on the Google key, or add a `GMI_API_KEY`, to get Genblaze-generated visuals.
+- **Genblaze's Google image adapter is Imagen-only**, and Imagen is closed. [`genblaze_gemini_image.py`](backend/app/services/genblaze_gemini_image.py) adds a `SyncProvider` for the `generateContent` image models so the Genblaze path stays usable on a modern Gemini key.
+- **Genblaze refuses `file://` reads outside the system temp directory** (an arbitrary-file-read guard, with no override plumbed through the sink). Render artefacts live under `static/` and `resources/`, so both the ingest and the image pipeline stage copies in temp. Worth knowing before you add a fourth artefact type.
 - **The manifest hashes the pre-embed bytes.** `GENBLAZE_EMBED_MANIFEST` rewrites the MP4 after the manifest is computed, so the recorded video SHA-256 describes the rendered content, not the annotated container. The sidecar `manifest.json` on B2 stays authoritative; `embed_manifest` verifies its own round-trip and reports false if the container rejected it.
 - **Presigned URLs expire** after `B2_URL_TTL_SECONDS`. The library re-signs on every refresh; copied links go stale.
 - **Live status is in-memory** — a backend restart mid-render loses stage tracking (the UI detects this and stops cleanly).

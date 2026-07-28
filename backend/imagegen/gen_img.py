@@ -1,13 +1,18 @@
 """
 Image Sourcing Module - Path-Agnostic Version
 
-Three sources, tried in order:
-  1. Genblaze generation (Google Imagen / GMI Cloud) - a real generative step,
-     recorded in the run's provenance manifest.
-  2. Pexels stock photo search - fast, free, good for real news subjects.
-  3. Direct Google Gemini image generation - last-resort fallback.
+Default flow (IMAGE_PROVIDER=auto):
+  1. Pexels stock photo search - the PRIMARY source. Real photography suits real
+     news subjects, and it is one fast, free HTTP GET.
+  2. Google Gemini image generation - the FALLBACK, used only for scenes where
+     Pexels has no match.
 
-`IMAGE_PROVIDER` pins a single source when you don't want the cascade.
+`IMAGE_PROVIDER` selects a different strategy:
+  auto      - Pexels -> Gemini            (default)
+  genblaze  - Genblaze -> Pexels -> Gemini (opt-in generative visuals)
+  pexels    - Pexels only
+  gemini    - Gemini only
+
 All paths are passed as parameters - no hardcoded paths.
 """
 import json
@@ -175,8 +180,8 @@ def main_generate_images(
         pexels_api_key: Pexels API key (stock image source)
         gemini_model: Gemini image model used on fallback
         aspect_ratio: Desired image aspect ratio
-        image_provider: "auto" (genblaze -> pexels -> gemini) or a pinned source
-            ("genblaze", "pexels", "gemini")
+        image_provider: "auto" (pexels -> gemini, the default flow), "genblaze"
+            (genblaze -> pexels -> gemini), or a pinned source ("pexels", "gemini")
         genblaze_generator: callable(prompts, out_paths, aspect_ratio) returning
             a path per prompt (None where that scene failed). Supplied by the
             video service so this module stays free of app imports.
@@ -219,8 +224,13 @@ def main_generate_images(
         targets.append(images_output_path / f"scene_{scene_id}.jpg")
         prompts.append(scene.get("prompt") or "")
 
-    # --- Pass 1: Genblaze generation -------------------------------------
-    if genblaze_generator and provider in ("auto", "genblaze"):
+    # --- Pass 1: Genblaze generation (opt-in only) -----------------------
+    # NOT part of "auto": Pexels is the primary source by design — real stock
+    # photography suits real news subjects better than a synthesized frame, and
+    # it is a single fast HTTP GET. Genblaze generation runs only when the
+    # operator asks for it with IMAGE_PROVIDER=genblaze, and still falls back to
+    # Pexels then Gemini for any scene it cannot produce.
+    if genblaze_generator and provider == "genblaze":
         wanted = [(i, p) for i, p in enumerate(prompts) if p]
         if wanted:
             try:
@@ -251,12 +261,15 @@ def main_generate_images(
             image_bytes = None
             used = None
 
-            if provider in ("auto", "pexels"):
+            # Pexels first (primary source), then Gemini generation as the
+            # fallback. "genblaze" mode reaches here only for scenes Genblaze
+            # could not produce, so it gets the same two-step safety net.
+            if provider in ("auto", "genblaze", "pexels"):
                 image_bytes = search_pexels_image(prompt, pexels_api_key, aspect_ratio)
                 if image_bytes:
                     used = "pexels"
 
-            if not image_bytes and provider in ("auto", "gemini"):
+            if not image_bytes and provider in ("auto", "genblaze", "gemini"):
                 image_bytes = generate_gemini_image(prompt, gemini_api_key, gemini_model)
                 if image_bytes:
                     used = "gemini"

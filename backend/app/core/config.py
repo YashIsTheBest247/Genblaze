@@ -129,13 +129,22 @@ class Settings(BaseSettings):
     # without it Flux falls back to the Google provider + local Kokoro TTS.
     GMI_API_KEY: str = Field(default="", env="GMI_API_KEY")
 
-    # Scene image source. "auto" = Pexels -> Genblaze -> direct Gemini.
-    # Force a single source with: pexels | genblaze | gemini
+    # Scene image source.
+    #   auto     -> Pexels (primary) then Gemini generation (fallback) — default
+    #   genblaze -> Genblaze generation first, still falling back to Pexels/Gemini
+    #   pexels   -> Pexels only
+    #   gemini   -> Gemini generation only
+    # Genblaze is opt-in here on purpose: stock photography is the better and
+    # cheaper primary for real news subjects. Genblaze still records the
+    # provenance manifest and owns B2 storage on every render regardless.
     IMAGE_PROVIDER: str = Field(default="auto", env="IMAGE_PROVIDER")
-    # Genblaze image model. Google (imagen-*) needs GEMINI_API_KEY; GMI models
-    # (seedream-*, flux-*) need GMI_API_KEY.
+    # Genblaze image model. Routing is by id:
+    #   gemini-*-image -> GeminiImageProvider (generateContent), needs GEMINI_API_KEY
+    #   imagen-*       -> genblaze_google.ImagenProvider (predict); note Google has
+    #                     closed every imagen-* model to new API keys
+    #   anything else  -> GMI Cloud, needs GMI_API_KEY
     GENBLAZE_IMAGE_MODEL: str = Field(
-        default="imagen-3.0-fast-generate-001", env="GENBLAZE_IMAGE_MODEL"
+        default="gemini-2.5-flash-image", env="GENBLAZE_IMAGE_MODEL"
     )
 
     # Narration source. "auto" = Genblaze cloud TTS when GMI_API_KEY is set,

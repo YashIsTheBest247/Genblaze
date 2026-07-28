@@ -257,8 +257,9 @@ class VideoGenerationService:
             })
 
             # Step 3: Source a distinct image per scene.
-            # Genblaze generation first (recorded in the manifest), then Pexels
-            # stock, then direct Gemini — each scene falls back independently.
+            # Pexels is the primary source and Gemini generation the fallback;
+            # each scene falls back independently. IMAGE_PROVIDER=genblaze puts
+            # Genblaze generation ahead of both.
             set_stage("image")
             logger.info("Generating images...")
             image_sources: dict = {}
@@ -274,10 +275,15 @@ class VideoGenerationService:
                 source_log=image_sources,
             )
             logger.info("Images generated successfully")
+            # Report the sources that ACTUALLY served scenes, not the configured
+            # preference — a manifest claiming a model that never ran would be
+            # worse than no manifest at all.
+            used = sorted(set(image_sources.values()))
             stages.append({
                 "stage": "visuals",
-                "provider": "genblaze" if "genblaze" in image_sources.values() else None,
-                "model": settings.GENBLAZE_IMAGE_MODEL,
+                "provider": "+".join(used) if used else None,
+                "model": settings.GENBLAZE_IMAGE_MODEL if "genblaze" in used else None,
+                "configured_model": settings.GENBLAZE_IMAGE_MODEL,
                 "aspect_ratio": settings.IMAGE_ASPECT_RATIO,
                 "per_scene_source": image_sources,
                 "genblaze_run_id": self._last_image_run_id,

@@ -1,0 +1,40 @@
+# Keep the build context small and the image reproducible.
+# Without this, ~180 MB of previously-rendered videos and the local venv get
+# shipped into every build — slow pushes, bloated images, and a library that
+# shows stale local files alongside the B2-backed ones.
+
+# Local media — Backblaze B2 is the library now.
+backend/static/videos/
+backend/static/app/
+backend/resources/images/
+backend/resources/audio/
+backend/resources/video/
+backend/resources/subtitles/
+backend/uploads/
+
+# Environments and caches
+**/venv/
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.cache/
+frontend/dist/
+
+# Secrets — must never enter an image layer
+**/.env
+**/.env.*
+!**/.env.example
+backend/secrets/
+**/*_client_secret.json
+**/*_token.json
+
+# VCS, docs, tooling
+.git/
+.github/
+.gitignore
+**/.DS_Store
+**/*.log
+.vscode/
+.idea/

@@ -47,7 +47,7 @@ async def generate_video(
     Generate a video based on the provided parameters.
     This endpoint triggers the full video generation pipeline:
     1. Script generation
-    2. Image generation (Genblaze -> Pexels -> Gemini)
+    2. Image sourcing (Pexels -> Gemini fallback; Genblaze generation opt-in)
     3. Audio/TTS generation (Genblaze cloud TTS or local Kokoro)
     4. Subtitle generation
     5. Video assembly

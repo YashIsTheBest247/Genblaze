@@ -191,6 +191,77 @@ def test_unconfigured_storage_degrades_instead_of_raising(monkeypatch):
 # --- provenance ------------------------------------------------------
 
 
+@pytest.fixture
+def artefacts_outside_temp():
+    """
+    Artefacts where a real render actually puts them — under the app tree, NOT
+    under the system temp directory.
+
+    This matters: Genblaze refuses file:// reads from outside temp, and pytest's
+    `tmp_path` lives *inside* temp, so a tmp_path-based fixture passes while
+    production fails. This fixture reproduces the real layout.
+    """
+    root = Path(__file__).resolve().parent.parent / "static" / "videos"
+    root.mkdir(parents=True, exist_ok=True)
+    video = root / "_pytest_outside_temp.mp4"
+    thumb = root / "_pytest_outside_temp.jpg"
+    _make_real_mp4(video)
+    thumb.write_bytes(b"\xff\xd8\xff\xe0fake jpeg" * 16)
+    try:
+        yield video, thumb
+    finally:
+        video.unlink(missing_ok=True)
+        thumb.unlink(missing_ok=True)
+
+
+def test_ingest_works_for_artefacts_outside_the_temp_dir(artefacts_outside_temp):
+    """
+    Regression: a real render's files live under static/videos, which Genblaze's
+    file:// allowlist rejects. record_render must stage them into temp itself.
+    """
+    from app.services.genblaze_service import genblaze
+
+    video, thumb = artefacts_outside_temp
+    manifest = genblaze.record_render(
+        topic="Outside temp",
+        artefacts=[(video, "final_video", "video/mp4"),
+                   (thumb, "thumbnail", "image/jpeg")],
+        stages=[{"stage": "assembly", "provider": "moviepy+ffmpeg", "model": None}],
+    )
+
+    assert manifest is not None, "ingest rejected artefacts outside the temp dir"
+    assert manifest["_verified"] is True
+
+    # The staged copies must hash to the real files, not to anything else.
+    from app.services.genblaze_service import sha256_of
+
+    by_role = {
+        a["metadata"]["role"]: a
+        for step in manifest["run"]["steps"] for a in step["assets"]
+    }
+    assert by_role["final_video"]["sha256"] == sha256_of(video)
+    assert by_role["thumbnail"]["sha256"] == sha256_of(thumb)
+
+
+def test_staging_directory_is_cleaned_up(artefacts_outside_temp):
+    """The temp staging copies must not survive the call."""
+    import tempfile
+
+    from app.services.genblaze_service import genblaze
+
+    video, _ = artefacts_outside_temp
+    temp_root = Path(tempfile.gettempdir())
+    before = set(temp_root.glob("flux-provenance-*"))
+
+    genblaze.record_render(
+        topic="Cleanup check",
+        artefacts=[(video, "final_video", "video/mp4")],
+        stages=[],
+    )
+
+    assert set(temp_root.glob("flux-provenance-*")) == before
+
+
 def test_manifest_records_the_generation_chain_and_verifies(render_artefacts):
     from app.services.genblaze_service import genblaze
 

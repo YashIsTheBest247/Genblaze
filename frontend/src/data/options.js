@@ -9,7 +9,7 @@ export const pipelineSteps = [
     { key: 'fetch', label: 'Fetch News', statusText: 'Scanning Economic Times feeds', durationMs: 3000 },
     { key: 'trend', label: 'Trend Analysis', statusText: 'Scoring articles by recency + momentum', durationMs: 3000 },
     { key: 'script', label: 'Viral Script', statusText: 'Writing the scene-by-scene script', durationMs: 4000 },
-    { key: 'image', label: 'Visuals', statusText: 'Generating visuals via Genblaze', durationMs: 7000 },
+    { key: 'image', label: 'Visuals', statusText: 'Sourcing images (Pexels → Gemini)', durationMs: 7000 },
     { key: 'voice', label: 'Narration', statusText: 'Generating narration audio', durationMs: 6000 },
     { key: 'subtitles', label: 'Subtitles', statusText: 'Timing subtitles to audio', durationMs: 5000 },
     { key: 'assembly', label: 'Assembly', statusText: 'Assembling the final cut', durationMs: 5000 },
