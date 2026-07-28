@@ -1,5 +1,7 @@
 # Flux — Deployment
 
+**Live: https://genblaze-production.up.railway.app**
+
 Goal: one public URL that serves both the UI and the API, with every generated
 asset stored durably on **Backblaze B2**.
 
@@ -49,30 +51,51 @@ Alternatively set `SCRIPT_PROVIDER=ollama` for a fully local model.
 
 ---
 
-## 2. Recommended: Hugging Face Spaces (free, 16 GB RAM)
+## 2. Recommended: Railway (this is what the live deploy runs on)
 
-Rendering is RAM-heavy (ffmpeg + optional torch). HF Spaces' free CPU tier gives
-2 vCPU / 16 GB RAM, which is comfortably more than Render or Fly free tiers, and
-its ephemeral disk is a non-issue now that B2 holds the library.
+### Why not the "free" tiers
 
-1. Create a **Space** → SDK: **Docker** → Blank template
-2. Push this repository to the Space remote:
-   ```bash
-   git remote add space https://huggingface.co/spaces/<user>/<space>
-   git push space main
+Rendering is RAM-heavy: local Kokoro TTS pulls in torch (~490 MB of deps) and the
+render peaks near 1.5 GB. That rules out most free tiers, which is worth knowing
+before you burn an afternoon on one:
+
+| Host | Free tier | Verdict |
+|---|---|---|
+| Hugging Face Spaces | **Static only** — Docker Spaces now require PRO | ✗ cannot run the backend |
+| Render | 512 MB | ✗ OOMs mid-render |
+| Koyeb | 512 MB | ✗ same |
+| Google Cloud Run | Generous, but CPU is throttled outside a request | ✗ renders run as background tasks and get killed |
+| **Railway** | **$5 trial credit, 30 days, no card** | ✓ |
+
+### Steps
+
+1. Push this repository to GitHub.
+2. 🔗 <https://railway.com> → sign up with GitHub → **New Project** →
+   **Deploy from GitHub repo**. Railway auto-detects the root `Dockerfile`;
+   [`.dockerignore`](.dockerignore) keeps old renders out of the build context
+   (198 MB → 17 MB).
+3. **Variables → Raw Editor** and paste all six at once:
    ```
-3. Edit the Space's `README.md` front matter so it targets the right port:
-   ```yaml
-   ---
-   title: Flux
-   sdk: docker
-   app_port: 8000
-   ---
+   GEMINI_API_KEY=...
+   B2_KEY_ID=...
+   B2_APP_KEY=...
+   B2_BUCKET=...
+   B2_REGION=us-east-005
+   PEXELS_API_KEY=...
    ```
-4. **Settings → Variables and secrets** — add every variable from §1 as a
-   **Secret** (`GEMINI_API_KEY`, `B2_KEY_ID`, `B2_APP_KEY`, `B2_BUCKET`,
-   `B2_REGION`), plus any optional ones.
-5. Wait for the build, then open the Space URL. That is the URL for judges.
+   Saving variables triggers a redeploy. **The app builds and serves fine
+   without them — it just can't render.** `/health` reports exactly which are
+   missing, so check it after the redeploy rather than assuming.
+4. **Settings → Networking → Generate Domain.** Railway does not expose the
+   service publicly by default. That domain is the URL for judges.
+5. Verify `/health` (§6), then run 2–3 renders to populate the library.
+
+First build takes 8–15 minutes — `pip install` of torch dominates. Later deploys
+reuse that layer unless `requirements.txt` changes.
+
+Budget: roughly $10/GB-month, so the $5 trial covers about two weeks of a 1 GB
+always-on instance. If it runs out, [render.yaml](render.yaml) deploys the same
+image on Render's $7/month Starter plan.
 
 ---
 
@@ -87,18 +110,17 @@ its ephemeral disk is a non-issue now that B2 holds the library.
 3. Fill in the `sync: false` secrets in the dashboard
 4. **Use the `starter` plan or larger** — the 512 MB free plan OOMs mid-render
 
-## 4. Railway / Fly.io / Cloud Run
+## 4. Fly.io / Cloud Run
 
-All three build the root `Dockerfile` unchanged.
+Both build the root `Dockerfile` unchanged.
 
-- **Railway**: New Project → Deploy from repo → add the variables → it detects
-  the Dockerfile. Give it ≥1 GB RAM.
 - **Fly.io**: `fly launch --dockerfile Dockerfile`, then
   `fly secrets set GEMINI_API_KEY=... B2_KEY_ID=... B2_APP_KEY=... B2_BUCKET=... B2_REGION=...`
   and size the VM with `fly scale memory 2048`.
 - **Cloud Run**: `gcloud run deploy flux --source . --memory 2Gi --timeout 900
-  --min-instances 1`. `--min-instances 1` matters: renders run as background
-  tasks, and scale-to-zero would kill one mid-flight.
+  --min-instances 1 --no-cpu-throttling`. Both flags matter: renders run as
+  background tasks that outlive the HTTP response, so scale-to-zero or throttled
+  CPU would kill one mid-flight.
 
 ## 5. Split deploy (frontend on Vercel)
 
@@ -114,7 +136,7 @@ Still supported if you prefer it:
 ## 6. Verify the deployment
 
 ```bash
-curl https://<your-url>/health
+curl https://genblaze-production.up.railway.app/health
 ```
 
 ```jsonc

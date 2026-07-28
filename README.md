@@ -1,20 +1,14 @@
----
-title: Flux
-emoji: 🎬
-colorFrom: indigo
-colorTo: purple
-sdk: docker
-app_port: 8000
-pinned: false
-license: mit
-short_description: Provenance-aware AI news-to-video, stored on Backblaze B2
----
-
-<!-- The block above is Hugging Face Spaces configuration; it tells the Space to
-     build the root Dockerfile and expose port 8000. GitHub renders it as a
-     table, which is harmless. Do not remove it or the Space will not start. -->
-
 # Flux — Provenance-Aware News-to-Video Automation
+
+### ▶ **Live app: https://genblaze-production.up.railway.app**
+
+[Health / readiness](https://genblaze-production.up.railway.app/health) ·
+[API docs](https://genblaze-production.up.railway.app/docs) ·
+[Storage + Genblaze status](https://genblaze-production.up.railway.app/api/v1/videos/storage)
+
+One URL serves both the UI and the API — the Docker image bundles the React SPA
+into FastAPI, so there is no separate frontend host and no CORS to configure.
+
 
 Flux monitors **Economic Times** RSS feeds, ranks the trending stories, and automatically turns the top ones into vertical (9:16) short-form videos — script, visuals, narration, subtitles, thumbnail. Every render is orchestrated and signed through the **[Genblaze](https://github.com/backblaze-labs/genblaze)** SDK and stored durably on **Backblaze B2**, then optionally published to YouTube. Unattended, on a schedule.
 
@@ -284,16 +278,24 @@ Narration and assembly dominate — they're real CPU work. See [ARCHITECTURE.md]
 
 ## Deployment
 
-The root [Dockerfile](Dockerfile) builds the SPA and serves it from FastAPI, so a deploy is **one service, one public URL** — no CORS, nothing to wire together:
+Deployed on **Railway** at
+[genblaze-production.up.railway.app](https://genblaze-production.up.railway.app).
+The root [Dockerfile](Dockerfile) builds the SPA and serves it from FastAPI, so a
+deploy is **one service, one public URL** — no CORS, nothing to wire together:
 
 ```bash
 docker build -t flux .
 docker run -p 8000:8000 --env-file backend/.env flux
 ```
 
-Runs as-is on **Hugging Face Spaces** (free, 16 GB RAM — recommended), **Render** ([render.yaml](render.yaml)), **Railway**, **Fly.io** and **Cloud Run**. Full guide: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
+The same image runs on **Railway**, **Render** ([render.yaml](render.yaml)),
+**Fly.io** and any Docker host. Full guide: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
-> Rendering is RAM-heavy (MoviePy + optional torch), so a 512 MB free tier will OOM — give it ≥1 GB. **Ephemeral disk is fine**: B2 owns the library, so restarts and redeploys don't lose anything. Setting `GMI_API_KEY` moves narration to the cloud and drops peak memory below 1 GB.
+> Rendering is RAM-heavy: local Kokoro TTS pulls in torch (~490 MB of deps) and
+> peaks around 1.5 GB, so **512 MB free tiers OOM mid-render** — give it ≥1 GB.
+> **Ephemeral disk is fine**: B2 owns the library, so restarts and redeploys lose
+> nothing. That property is what makes this deployable on a container host with
+> no volume attached.
 
 ---
 
