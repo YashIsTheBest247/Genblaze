@@ -105,8 +105,9 @@ class GenblazeService:
             "image_model": settings.GENBLAZE_IMAGE_MODEL if self._image_provider_name() else None,
             # Human-readable description of the actual visual cascade in effect.
             "visual_flow": self._visual_flow(),
-            "tts_provider": "gmicloud" if self._use_genblaze_tts() else "kokoro",
+            "tts_provider": self._narration_backend(),
             "tts_model": settings.GENBLAZE_TTS_MODEL if self._use_genblaze_tts() else None,
+            "narration_flow": self._narration_flow(),
             "embed_manifest": settings.GENBLAZE_EMBED_MANIFEST,
         }
 
@@ -211,6 +212,27 @@ class GenblazeService:
 
             return GMICloudImageProvider(api_key=settings.GMI_API_KEY), name
         return None, None
+
+    def _narration_backend(self) -> str:
+        """Which backend narration will actually use on the next render."""
+        choice = settings.TTS_PROVIDER.lower()
+        if choice == "kokoro":
+            return "kokoro"
+        if choice == "edge":
+            return "edge"
+        if self._use_genblaze_tts():
+            return "gmicloud"
+        return "edge" if choice in ("auto", "genblaze") else choice
+
+    def _narration_flow(self) -> str:
+        """The narration fallback chain in effect, for /health and the UI."""
+        choice = settings.TTS_PROVIDER.lower()
+        if choice in ("kokoro", "edge"):
+            return choice
+        if choice == "genblaze":
+            return "gmicloud -> edge -> kokoro" if settings.gmi_configured else "edge -> kokoro"
+        head = "gmicloud -> " if self._use_genblaze_tts() else ""
+        return f"{head}edge -> kokoro"
 
     def _use_genblaze_tts(self) -> bool:
         choice = settings.TTS_PROVIDER.lower()
