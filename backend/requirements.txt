@@ -29,20 +29,14 @@ google-auth-oauthlib
 google-auth-httplib2
 
 # Video Processing
-opencv-python-headless
 moviepy
 imageio-ffmpeg
 pysrt
 pillow
 
-# Audio/TTS
-soundfile
-kokoro
-misaki
-
-# ML/AI
-# CPU-only torch: the +cpu local version lives on the pytorch index and keeps the
-# build lean (default PyPI torch on Linux pulls the multi-GB CUDA wheel).
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.12.1+cpu
-transformers
+# Audio/TTS — Edge TTS is the default narration backend: free, no API key, no
+# local model, negligible memory. Kokoro (and therefore torch, ~490 MB of deps
+# and a ~1.5 GB peak) is OPTIONAL and lives in requirements-kokoro.txt.
+# Keeping torch out of the default image is what makes this deployable on a
+# small instance — with it in, the container was OOM-killed on every render.
+edge-tts

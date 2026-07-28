@@ -147,9 +147,20 @@ class Settings(BaseSettings):
         default="gemini-2.5-flash-image", env="GENBLAZE_IMAGE_MODEL"
     )
 
-    # Narration source. "auto" = Genblaze cloud TTS when GMI_API_KEY is set,
-    # otherwise local Kokoro. Force with: kokoro | genblaze
+    # Narration source.
+    #   auto     -> Genblaze (if GMI key) -> Edge TTS -> Kokoro   [default]
+    #   genblaze -> Genblaze cloud TTS (needs GMI_API_KEY)
+    #   edge     -> Edge TTS: free, no key, no local model
+    #   kokoro   -> local Kokoro (needs the optional torch deps)
+    #
+    # Edge is the default because Kokoro loads torch and pulls a ~350 MB model on
+    # first use. On a container with ephemeral disk that happens mid-render and
+    # the memory spike OOM-kills the process — it did, reproducibly, in
+    # production. Edge is a network call with negligible memory.
     TTS_PROVIDER: str = Field(default="auto", env="TTS_PROVIDER")
+    # Edge TTS voices. `edge-tts --list-voices` shows all 47 English options.
+    EDGE_TTS_VOICE_MALE: str = Field(default="en-GB-RyanNeural", env="EDGE_TTS_VOICE_MALE")
+    EDGE_TTS_VOICE_FEMALE: str = Field(default="en-GB-SoniaNeural", env="EDGE_TTS_VOICE_FEMALE")
     GENBLAZE_TTS_MODEL: str = Field(
         default="minimax-tts-speech-2.6-turbo", env="GENBLAZE_TTS_MODEL"
     )

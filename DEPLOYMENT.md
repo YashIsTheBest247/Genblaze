@@ -53,19 +53,23 @@ Alternatively set `SCRIPT_PROVIDER=ollama` for a fully local model.
 
 ## 2. Recommended: Railway (this is what the live deploy runs on)
 
-### Why not the "free" tiers
+### Host options
 
-Rendering is RAM-heavy: local Kokoro TTS pulls in torch (~490 MB of deps) and the
-render peaks near 1.5 GB. That rules out most free tiers, which is worth knowing
-before you burn an afternoon on one:
+The default image carries **no torch** — narration runs through Edge TTS — so
+peak memory is ~300 MB rather than ~1.5 GB. That reopens the small tiers:
 
 | Host | Free tier | Verdict |
 |---|---|---|
+| **Railway** | **$5 trial credit, 30 days, no card** | ✓ what the live deploy runs on |
+| Render | 512 MB | ✓ workable now that torch is gone |
+| Koyeb | 512 MB, no card | ✓ same |
+| Google Cloud Run | Generous, but CPU is throttled outside a request | ✗ renders are background tasks and get killed |
 | Hugging Face Spaces | **Static only** — Docker Spaces now require PRO | ✗ cannot run the backend |
-| Render | 512 MB | ✗ OOMs mid-render |
-| Koyeb | 512 MB | ✗ same |
-| Google Cloud Run | Generous, but CPU is throttled outside a request | ✗ renders run as background tasks and get killed |
-| **Railway** | **$5 trial credit, 30 days, no card** | ✓ |
+
+> If you set `TTS_PROVIDER=kokoro` and install `requirements-kokoro.txt`, peak
+> memory returns to ~1.5 GB and the 512 MB tiers will OOM mid-render. That is
+> exactly what happened on the first deploy of this app — the container was
+> killed while loading the TTS model, twice, reproducibly.
 
 ### Steps
 
@@ -90,8 +94,8 @@ before you burn an afternoon on one:
    service publicly by default. That domain is the URL for judges.
 5. Verify `/health` (§6), then run 2–3 renders to populate the library.
 
-First build takes 8–15 minutes — `pip install` of torch dominates. Later deploys
-reuse that layer unless `requirements.txt` changes.
+First build takes ~3–5 minutes now that torch is out of the image (it was 8–15).
+Later deploys reuse the dependency layer unless `requirements.txt` changes.
 
 Budget: roughly $10/GB-month, so the $5 trial covers about two weeks of a 1 GB
 always-on instance. If it runs out, [render.yaml](render.yaml) deploys the same
@@ -176,10 +180,12 @@ Then, in the UI:
 - **One render at a time.** The render lock and live status are in-process, so
   run a single worker (the Dockerfile pins `--workers 1`). Horizontal scaling
   would need Redis or a task queue.
-- **First render is slow.** With local Kokoro TTS the model downloads once
-  (~350 MB) and is then cached. Setting `GMI_API_KEY` avoids this entirely.
-- **Memory.** Peak usage lands around 1.5 GB with local TTS, well under 1 GB
-  with cloud TTS. `FLUX_FFMPEG_THREADS=2` trims the peak further.
+- **A restart mid-render looks like "no video was produced".** Live status is
+  in-memory, so a killed container comes back with `updated_at: null` and the UI
+  reports the render stopped. If you see that, check the platform logs for an
+  OOM around the `voice` or `assembly` stage rather than suspecting the pipeline.
+- **Memory.** ~300 MB peak on the default image. `FLUX_FFMPEG_THREADS=2` and a
+  lower `FLUX_VIDEO_WIDTH`/`HEIGHT` trim the assembly peak further.
 - **Presigned URLs expire** after `B2_URL_TTL_SECONDS` (default 1 h). The
   library re-signs on every refresh, so this only matters for links you copy
   out of the app.

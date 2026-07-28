@@ -73,8 +73,9 @@ flowchart TD
     GEMINI["Google Gemini 2.5 Flash<br/>script · image fallback"]
     PEXELS["Pexels stock search<br/>primary visual source"]
     GBIMG["Genblaze image · opt-in<br/>Gemini image · GMI Cloud"]
-    GBTTS["Genblaze audio<br/>GMI Cloud TTS"]
-    KOKORO["Kokoro TTS · local"]
+    EDGE["Edge TTS · default<br/>free · no local model"]
+    GBTTS["Genblaze audio · opt-in<br/>GMI Cloud TTS"]
+    KOKORO["Kokoro TTS · optional<br/>local · needs torch"]
     FFMPEG["MoviePy + ffmpeg · local"]
     YTAPI["YouTube Data API v3"]
   end
@@ -102,8 +103,9 @@ flowchart TD
   S2 --> PEXELS
   PEXELS -.->|"no match → fallback"| GEMINI
   S2 -.->|"opt-in: IMAGE_PROVIDER=genblaze"| GBIMG
-  S3 --> GBTTS
-  S3 -.->|"no cloud key → fallback"| KOKORO
+  S3 --> EDGE
+  S3 -.->|"opt-in: GMI key"| GBTTS
+  EDGE -.->|"fallback"| KOKORO
   S5 --> FFMPEG
   S6 --> FFMPEG
 
@@ -121,7 +123,7 @@ flowchart TD
 
   classDef box fill:#eeeaff,stroke:#7a6fd0,color:#2f2a55;
   classDef store fill:#e6f0ff,stroke:#5b7fc7,color:#22354f;
-  class HERO,AUTO,PIPE,LIB,API,STATIC,LIFE,SCHED,FETCH,RANK,S1,S2,S3,S4,S5,S6,S7,S8,STATUS,LOCK,YT,ETRSS,GEMINI,GBIMG,PEXELS,GBTTS,KOKORO,FFMPEG,YTAPI,INGEST,MANIFEST,EMBED,SINK box;
+  class HERO,AUTO,PIPE,LIB,API,STATIC,LIFE,SCHED,FETCH,RANK,S1,S2,S3,S4,S5,S6,S7,S8,STATUS,LOCK,YT,ETRSS,GEMINI,GBIMG,PEXELS,EDGE,GBTTS,KOKORO,FFMPEG,YTAPI,INGEST,MANIFEST,EMBED,SINK box;
   class SEEN,B2,SCRATCH store;
 
   style FE fill:#fdfde8,stroke:#cfcf9a
@@ -151,7 +153,7 @@ flowchart TD
 
 - The backend is the single source of truth for render state. The frontend never simulates progress — it polls `/videos/status` and renders whatever stage the backend reports.
 - **Storage is not a side effect.** B2 is where the library lives; the API resolves `/list`, `/stream` and `/download` against the bucket and hands out presigned URLs. That is what lets the whole app run on a host with no persistent disk.
-- **Every generative dependency is optional.** Pexels → Gemini for visuals; Genblaze TTS → Kokoro for narration; B2 → local disk. The app boots with zero credentials and reports precisely what is missing on `/health`.
+- **Every generative dependency is optional.** Pexels → Gemini for visuals; Genblaze → Edge → Kokoro for narration; B2 → local disk. The app boots with zero credentials and reports precisely what is missing on `/health`.
 - **Stock beats synthesis for news.** Pexels is the primary visual source by design: a real photograph of a real subject is more credible in a news short than a generated frame, and it costs one fast HTTP GET instead of a per-image generation fee. Genblaze generation is available (`IMAGE_PROVIDER=genblaze`) for topics with no usable stock imagery, but it does not preempt the default path.
 
 ---
@@ -200,7 +202,7 @@ Runs as a FastAPI background task, **serialized by a module-level lock**.
 | 0 | Clean working dirs | — | wipes `resources/images`, `resources/audio` |
 | 1 | Script | `script` | one LLM call → JSON (`audio_script` + `visual_script`) |
 | 2 | Visuals | `image` | Pexels per scene, **4-way thread pool**, Gemini generation fallback (Genblaze generation opt-in) |
-| 3 | Narration | `voice` | Kokoro TTS → one `.wav` per segment |
+| 3 | Narration | `voice` | Edge TTS → one `.mp3` per segment, 4-way concurrent (Kokoro `.wav` as fallback) |
 | 4 | Subtitles | `subtitles` | timings derived from **actual audio durations** |
 | 5 | Assembly | `assembly` | MoviePy: fit → concat → captions → ffmpeg encode |
 | 6 | Thumbnail | — | ffmpeg frame grab → `<name>.jpg` |
@@ -458,31 +460,69 @@ Termination conditions: `done` → success; `error` → show backend message; ba
 
 ## 6. Performance
 
-Measured on a 12-core laptop, 60-second video, 480×854:
+Measured on a 12-core laptop, 480×854:
 
-| Stage | Before | After | Change |
+| Stage | Original | Optimized | Change |
 |---|---|---|---|
 | Script | 23 s | **6 s** | `thinkingBudget: 0` on Gemini 2.5 Flash |
 | Visuals | 14 s | **3 s** | sequential + `sleep(2)` → 4-way thread pool |
-| Narration | 59 s | 46 s | — |
+| Narration | 59 s | **~3 s** | local Kokoro → Edge TTS (see below) |
 | Subtitles | 3 s | <1 s | — |
-| Assembly | 94 s | 69 s | 480p, `ultrafast`, all cores |
-| **Total** | **193 s** | **130 s** | **−33%** |
+| Assembly | 94 s | ~40 s | 480p, `ultrafast`, all cores |
+| **Total** | **193 s** | **~60 s** | **−69%** |
 
-### Why it isn't seconds
+### The narration decision was forced by production, not chosen for speed
 
-Narration + assembly are ~88% of the remaining time, and both are irreducible **given the product requirement**: publishing to YouTube demands a real encoded MP4 file.
+Kokoro is a good local model, and it was the original design: no API key, fully
+offline, ~46 s for a minute of speech. It is also what made the app
+**undeployable**.
+
+On a container with an ephemeral disk, Kokoro downloads its ~350 MB model on
+every cold start — which means the download happens *during the first render*,
+concurrent with the torch load. Peak memory hit ~1.5 GB and the platform
+OOM-killed the process. Reproduced twice on the live deployment: script and
+visuals completed, then the process died mid-`voice` stage and came back with a
+freshly-initialized `render_status` — the giveaway being `updated_at: null`,
+since any in-process error would have set `stage: "error"` and a timestamp
+instead.
+
+Moving narration to Edge TTS fixed three things at once:
+
+| | Kokoro (local) | Edge TTS (network) |
+|---|---|---|
+| Narration time | ~46 s | **~3 s** |
+| Peak memory | ~1.5 GB | **~300 MB** |
+| Image dependencies | +600 MB (torch, transformers, soundfile) | +2 MB |
+| Cold start | 350 MB download | none |
+| Requires | nothing | network |
+
+Kokoro remains supported (`TTS_PROVIDER=kokoro` + `requirements-kokoro.txt`) for
+offline runs. The trade accepted: narration now depends on a network service,
+and Edge TTS is an unofficial client for Microsoft's read-aloud endpoint rather
+than a contractual API. For a pipeline that already calls Gemini and Pexels over
+the network, that is not a new class of dependency — and the fallback chain
+means a failure degrades rather than breaks.
+
+`opencv-python-headless` was also dropped: 112 MB, imported by nothing. A render
+with `cv2`, `torch`, `kokoro`, `soundfile` and `transformers` all blocked at the
+import hook completes normally, which is the test that verified the slim image.
+
+### Why it still isn't seconds
+
+Assembly is now ~65% of the remaining time and is irreducible **given the
+product requirement**: publishing demands a real encoded MP4 file.
 
 Systems that generate a "video" in 3–6 seconds (e.g. browser-composed reels) achieve it by **never encoding anything** — they play an image slideshow with on-device speech synthesis. That output cannot be uploaded to YouTube. The choice is therefore architectural, not an optimization gap:
 
 | | Live-composed reel | Flux |
 |---|---|---|
 | Output | ephemeral browser playback | real `.mp4` |
-| TTS | Web Speech API (0 s) | Kokoro (~46 s) |
-| Encode | none | ffmpeg (~69 s) |
+| TTS | Web Speech API (0 s) | Edge TTS (~3 s) |
+| Encode | none | ffmpeg (~40 s) |
 | Publishable to YouTube | ❌ | ✅ |
 
-Remaining levers: drop fps 24→20 and remove per-clip fades (~15–20 s), or move TTS to a hosted API (trades local cost for network latency).
+Remaining levers: drop fps 24→20 and remove per-clip fades (~10–15 s), or accept
+a lower resolution via `FLUX_VIDEO_WIDTH`/`HEIGHT`.
 
 ---
 
@@ -508,4 +548,5 @@ Remaining levers: drop fps 24→20 and remove per-clip fades (~15–20 s), or mo
 - **No manifest signing.** `Manifest.signature` is left unset; the canonical hash proves integrity but not authorship. Signing would be the next step toward a C2PA-style claim.
 - **Presigned URL churn.** Every `/videos/list` re-signs every entry. Fine at library scale; a large library would want cached URLs keyed to expiry.
 - **Simulated stage granularity.** Progress is per-stage, not percentage-within-stage — MoviePy's encode progress isn't surfaced.
-- **Python 3.12 pin.** torch/Kokoro/spaCy wheel availability — avoidable by running narration through Genblaze cloud TTS.
+- **Narration depends on a network service.** Edge TTS is an unofficial client for Microsoft's read-aloud endpoint. Stable in practice, but not contractual; `TTS_PROVIDER=kokoro` restores offline narration at the cost of ~600 MB of dependencies.
+- **Python 3.12 pin** applies only to the optional Kokoro extras; the default image is not otherwise constrained.

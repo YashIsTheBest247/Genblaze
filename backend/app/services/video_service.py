@@ -299,13 +299,20 @@ class VideoGenerationService:
                 lang_code=settings.TTS_LANG_CODE,
                 genblaze_generator=self._genblaze_narration,
                 source_log=voice_source,
+                provider=settings.TTS_PROVIDER,
+                voice_male=settings.EDGE_TTS_VOICE_MALE,
+                voice_female=settings.EDGE_TTS_VOICE_FEMALE,
             )
             logger.info("Audio generated successfully")
+            used_tts = voice_source.get("provider")
             stages.append({
                 "stage": "narration",
-                "provider": voice_source.get("provider"),
-                "model": (settings.GENBLAZE_TTS_MODEL
-                          if voice_source.get("provider") == "genblaze" else "kokoro-82m"),
+                "provider": used_tts,
+                "model": {
+                    "genblaze": settings.GENBLAZE_TTS_MODEL,
+                    "edge": voice_source.get("voice"),
+                    "kokoro": "kokoro-82m",
+                }.get(used_tts),
                 "genblaze_run_id": self._last_audio_run_id,
             })
 

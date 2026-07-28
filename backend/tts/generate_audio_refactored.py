@@ -1,19 +1,38 @@
 """
 Audio Generation Module - Path-Agnostic Version
 
-Two narration backends:
-  * Genblaze cloud TTS (GMI Cloud / ElevenLabs / MiniMax) - keeps torch off the
-    deployment host entirely, which is what makes small instances viable.
-  * Kokoro TTS - fully local, no API key, the default when no cloud key is set.
+Three narration backends, tried in this order under TTS_PROVIDER=auto:
 
-Kokoro (and therefore torch) is imported lazily inside the local path, so a
-cloud-TTS deployment never loads it.
+  1. Genblaze cloud TTS (GMI Cloud / ElevenLabs / MiniMax) - used when a cloud
+     key is configured.
+  2. Edge TTS - free, no API key, no local model. THE DEFAULT.
+  3. Kokoro TTS - fully local, needs torch (~490 MB of deps, ~1.5 GB peak).
+
+Why Edge is the default: Kokoro loads torch and downloads a ~350 MB model on
+first use. On a container with an ephemeral disk that download happens during
+the first render, concurrent with the torch load, and the memory spike
+OOM-killed the deployment every single time. Edge TTS is a network call with
+negligible memory, which is what lets this run on a small instance at all.
+
+Kokoro remains fully supported for local runs (TTS_PROVIDER=kokoro), but its
+dependencies are optional - see requirements-kokoro.txt. torch, soundfile and
+kokoro are imported lazily inside that path only, so an image built without
+them still runs everything else.
+
 All paths are passed as parameters - no hardcoded paths.
 """
+import asyncio
 import json
 import io
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
+
+# Speaker label -> Edge TTS voice. The script LLM emits these three labels.
+DEFAULT_VOICE_MALE = "en-GB-RyanNeural"
+DEFAULT_VOICE_FEMALE = "en-GB-SoniaNeural"
+
+# Bounded so a long script doesn't open dozens of sockets at once.
+_EDGE_CONCURRENCY = 4
 
 
 def generate_audio(
@@ -59,6 +78,78 @@ def generate_audio(
     return all_audio
 
 
+def _edge_voice_for(speaker: str, voice_male: str, voice_female: str) -> str:
+    """Map the script's speaker label onto an Edge TTS voice."""
+    return voice_male if speaker in ("default", "narrator_male") else voice_female
+
+
+def _edge_rate(speed: Any) -> str:
+    """
+    Convert the script's speed multiplier (0.9-1.1) to an Edge rate string.
+
+    Edge expects a signed percentage delta, e.g. 0.9 -> "-10%".
+    """
+    try:
+        percent = int(round((float(speed) - 1.0) * 100))
+    except (TypeError, ValueError):
+        percent = 0
+    percent = max(-50, min(100, percent))
+    return f"{percent:+d}%"
+
+
+def generate_audio_edge(
+    script_data: Dict[str, Any],
+    audio_path: Path,
+    voice_male: str = DEFAULT_VOICE_MALE,
+    voice_female: str = DEFAULT_VOICE_FEMALE,
+) -> List[Path]:
+    """
+    Synthesize one MP3 per script segment using Edge TTS.
+
+    Segments are generated concurrently (bounded), since each is an independent
+    network round trip. Returns the audio paths in segment order.
+
+    The assembly stage already accepts .mp3 and sorts on the `segment_N` stem,
+    so emitting MP3 here needs no conversion step and no downstream change.
+
+    Raises on any failure so the caller can fall back to another backend.
+    """
+    import edge_tts
+
+    segments = script_data["audio_script"]
+    audio_path = Path(audio_path)
+    audio_path.mkdir(parents=True, exist_ok=True)
+    targets = [audio_path / f"segment_{i}.mp3" for i in range(len(segments))]
+
+    async def _run() -> None:
+        semaphore = asyncio.Semaphore(_EDGE_CONCURRENCY)
+
+        async def _one(index: int, segment: Dict[str, Any]) -> None:
+            text = (segment.get("text") or "").strip()
+            if not text:
+                raise ValueError(f"Segment {index} has no text to narrate")
+            async with semaphore:
+                await edge_tts.Communicate(
+                    text,
+                    _edge_voice_for(segment.get("speaker", "default"), voice_male, voice_female),
+                    rate=_edge_rate(segment.get("speed", 1.0)),
+                ).save(str(targets[index]))
+
+        await asyncio.gather(*(_one(i, s) for i, s in enumerate(segments)))
+
+    # The render runs on a worker thread with no event loop of its own, so a
+    # fresh loop here is safe and avoids touching the server's loop.
+    asyncio.run(_run())
+
+    missing = [t for t in targets if not t.exists() or t.stat().st_size == 0]
+    if missing:
+        raise RuntimeError(f"Edge TTS produced no audio for: {[m.name for m in missing]}")
+
+    for target in targets:
+        print(f"Audio file saved at: {target}")
+    return targets
+
+
 def merge_audio(
     audio_path: Path,
     audio_bytes_list: List[bytes]
@@ -94,6 +185,9 @@ def main_generate_audio(
     lang_code: str = "b",
     genblaze_generator: Optional[Callable[[List[str], List[Path]], Sequence[Optional[Path]]]] = None,
     source_log: Optional[dict] = None,
+    provider: str = "auto",
+    voice_male: str = DEFAULT_VOICE_MALE,
+    voice_female: str = DEFAULT_VOICE_FEMALE,
 ) -> List[Path]:
     """
     Main function to generate audio from script.
@@ -103,9 +197,11 @@ def main_generate_audio(
         audio_path: Directory where audio files should be saved
         lang_code: Language code for Kokoro TTS
         genblaze_generator: callable(texts, out_paths) returning a path per
-            segment, used when cloud narration is configured. Falls back to
-            Kokoro when it returns nothing usable.
+            segment, used when cloud narration is configured
         source_log: optional dict mutated with the narration backend actually used
+        provider: "auto" (genblaze -> edge -> kokoro), or pin one of
+            "genblaze", "edge", "kokoro"
+        voice_male / voice_female: Edge TTS voice names
 
     Returns:
         List of paths to generated audio files
@@ -130,31 +226,53 @@ def main_generate_audio(
 
     segments = script_data["audio_script"]
     log = source_log if source_log is not None else {}
+    choice = (provider or "auto").lower()
 
-    # --- Cloud narration via Genblaze ------------------------------------
-    if genblaze_generator:
+    def _discard(paths) -> None:
+        """A partial narration would desync the subtitles — never keep one."""
+        for path in paths:
+            Path(path).unlink(missing_ok=True)
+
+    # --- 1. Cloud narration via Genblaze ---------------------------------
+    if genblaze_generator and choice in ("auto", "genblaze"):
         texts = [segment.get("text", "") for segment in segments]
         targets = [audio_path / f"segment_{idx}.wav" for idx in range(len(segments))]
         try:
             produced = genblaze_generator(texts, targets)
             done = [Path(p) for p in (produced or []) if p and Path(p).exists()]
-            # All-or-nothing: a partial narration would desync the subtitles,
-            # so anything short of a full set falls through to Kokoro.
             if len(done) == len(segments):
                 log["provider"] = "genblaze"
                 print(f"Narration complete via Genblaze: {len(done)} segments")
                 return targets
             if done:
                 print(f"Genblaze produced {len(done)}/{len(segments)} segments; "
-                      "falling back to local TTS for consistency.")
-                for path in done:
-                    path.unlink(missing_ok=True)
+                      "falling back for consistency.")
+                _discard(done)
         except Exception as e:  # noqa: BLE001
-            print(f"Genblaze narration unavailable ({e}); using local Kokoro TTS.")
+            print(f"Genblaze narration unavailable ({e}).")
 
-    # --- Local narration via Kokoro --------------------------------------
+    # --- 2. Edge TTS (default) -------------------------------------------
+    if choice in ("auto", "edge"):
+        try:
+            audio_files = generate_audio_edge(script_data, audio_path, voice_male, voice_female)
+            log["provider"] = "edge"
+            log["voice"] = f"{voice_male}/{voice_female}"
+            print(f"Narration complete via Edge TTS: {len(audio_files)} segments")
+            return audio_files
+        except Exception as e:  # noqa: BLE001
+            print(f"Edge TTS failed ({e}); falling back to local Kokoro TTS.")
+            _discard(audio_path.glob("segment_*.mp3"))
+
+    # --- 3. Local narration via Kokoro (optional deps) -------------------
     print(f"Generating audio from script: {script_path}")
-    audio_bytes_list = generate_audio(script_data, lang_code)
+    try:
+        audio_bytes_list = generate_audio(script_data, lang_code)
+    except ImportError as e:
+        raise RuntimeError(
+            "No narration backend available. Edge TTS failed and Kokoro is not "
+            "installed — install it with: pip install -r requirements-kokoro.txt "
+            f"(original error: {e})"
+        ) from e
     audio_files = merge_audio(audio_path, audio_bytes_list)
     log["provider"] = "kokoro"
 

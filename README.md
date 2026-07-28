@@ -92,7 +92,7 @@ Net effect: **recent stories echoed across multiple ET sections rank highest.** 
 | **Durable storage** | **Backblaze B2** via `genblaze-s3` (S3-compatible, presigned URLs) |
 | Script LLM | Google Gemini 2.5 Flash (`google-genai`) **or** Ollama (local) |
 | Visuals | Pexels stock search → Gemini image generation fallback (Genblaze generation opt-in) |
-| Narration | Genblaze cloud TTS (GMI Cloud) **or** Kokoro TTS (PyTorch, CPU) |
+| Narration | Edge TTS (default — free, no key, no local model) · Genblaze cloud TTS · Kokoro (optional, local) |
 | Assembly | MoviePy + ffmpeg (`imageio-ffmpeg`), Pillow |
 | Publishing | YouTube Data API v3 (`google-api-python-client`) |
 | Frontend | React 19, Vite, Tailwind CSS |
@@ -208,7 +208,8 @@ ollama pull llama3.2
 | `GMI_API_KEY` | — | Optional — unlocks GMI Cloud image/audio models |
 | `IMAGE_PROVIDER` | `auto` | `auto` (pexels→gemini), `genblaze` (genblaze→pexels→gemini), `pexels`, `gemini` |
 | `GENBLAZE_IMAGE_MODEL` | `gemini-2.5-flash-image` | `gemini-*-image` → Gemini `generateContent`, `imagen-*` → Imagen, else → GMI Cloud |
-| `TTS_PROVIDER` | `auto` | `auto`, `genblaze`, `kokoro` |
+| `TTS_PROVIDER` | `auto` | `auto` (genblaze→edge→kokoro), `edge`, `genblaze`, `kokoro` |
+| `EDGE_TTS_VOICE_MALE` / `_FEMALE` | `en-GB-RyanNeural` / `en-GB-SoniaNeural` | `edge-tts --list-voices` for all 47 |
 | `GENBLAZE_TTS_MODEL` | `minimax-tts-speech-2.6-turbo` | Cloud narration model |
 | **Script** | | |
 | `SCRIPT_PROVIDER` | `gemini` | `gemini` or `ollama` |
@@ -262,17 +263,18 @@ genblaze verify  video.mp4     # check it against the file's bytes
 
 ## Performance
 
-A 60-second video renders in roughly **130 s** on a typical laptop:
+A short renders in roughly **60 s** (measured, 20 s video, 3 scenes):
 
-| Stage | Time |
-|---|---|
-| Script (Gemini, thinking disabled) | ~6 s |
-| Visuals (parallel Pexels fetch) | ~3 s |
-| Narration (Kokoro TTS, CPU) | ~46 s |
-| Subtitles | <1 s |
-| Assembly (ffmpeg encode) | ~69 s |
+| Stage | Time | Note |
+|---|---|---|
+| Script (Gemini, thinking disabled) | ~6 s | one LLM call |
+| Visuals (parallel Pexels fetch) | ~3 s | 4-way thread pool |
+| **Narration (Edge TTS)** | **~3 s** | was ~46 s on local Kokoro |
+| Subtitles | <1 s | timed from real audio durations |
+| Assembly (ffmpeg encode) | ~40 s | dominates |
+| Provenance + B2 upload | ~5 s | manifest, embed, 6 objects |
 
-Narration and assembly dominate — they're real CPU work. See [ARCHITECTURE.md](ARCHITECTURE.md#performance) for why this can't be seconds without dropping the MP4 entirely.
+Moving narration off-device cut total render time roughly in half **and** removed the memory spike that made the app undeployable — see [ARCHITECTURE.md](ARCHITECTURE.md#performance). Assembly now dominates, and it's irreducible: publishing demands a real encoded MP4.
 
 ---
 
@@ -291,17 +293,18 @@ docker run -p 8000:8000 --env-file backend/.env flux
 The same image runs on **Railway**, **Render** ([render.yaml](render.yaml)),
 **Fly.io** and any Docker host. Full guide: **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
-> Rendering is RAM-heavy: local Kokoro TTS pulls in torch (~490 MB of deps) and
-> peaks around 1.5 GB, so **512 MB free tiers OOM mid-render** — give it ≥1 GB.
-> **Ephemeral disk is fine**: B2 owns the library, so restarts and redeploys lose
-> nothing. That property is what makes this deployable on a container host with
-> no volume attached.
+> **Ephemeral disk is fine** — B2 owns the library, so restarts and redeploys
+> lose nothing. And with narration off-device the image carries no torch, so
+> peak memory sits near 300 MB instead of 1.5 GB. Those two properties together
+> are what make this runnable on a small container with no volume attached.
 
 ---
 
 ## Notes & limitations
 
-- **Python 3.12 only** — torch/Kokoro/spaCy lack wheels for newer versions. (Cloud TTS via `GMI_API_KEY` removes torch from the critical path.)
+- **Narration is a network call by default.** Edge TTS is an unofficial client for Microsoft's Edge read-aloud endpoint — widely used and stable, but not a contractual API. `TTS_PROVIDER=kokoro` (plus `requirements-kokoro.txt`) restores fully-offline narration if you need it.
+- **The default image has no torch.** That's deliberate: with Kokoro in the container, the ~350 MB model download happened during the first render, concurrent with the torch load, and the memory spike OOM-killed the process on every deploy. Removing it cut ~600 MB of dependencies and halved render time.
+- **Python 3.12 only** — the optional Kokoro extras lack wheels for newer versions.
 - **One render at a time** — enforced by a lock; concurrent requests queue (renders share working directories).
 - **Gemini free tier is rate-limited** (~20 req/min). Script generation uses a single call; switch to Ollama to avoid limits entirely.
 - **Google image generation needs billing — verified, not assumed.** Every `imagen-*` model now returns *"no longer available to new users"* on the Gemini API, and `gemini-*-image` reports `generate_content_free_tier_requests, limit: 0`. So on a free Gemini key Genblaze cannot produce visuals at all, and Flux trips a one-shot circuit breaker and serves scenes from Pexels for the rest of the process rather than paying that latency on every scene. Enable billing on the Google key, or add a `GMI_API_KEY`, to get Genblaze-generated visuals.

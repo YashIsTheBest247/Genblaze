@@ -1,0 +1,16 @@
+1
+00:00:02,000 --> 00:00:05,960
+The Indian Rupee recently strengthened against the US Dollar.
+
+2
+00:00:05,960 --> 00:00:10,460
+This surge is primarily due to significant foreign inflows into
+
+3
+00:00:10,460 --> 00:00:11,360
+Indian equities.
+
+4
+00:00:11,360 --> 00:00:15,270
+The Reserve Bank of India remained on the sidelines.
+

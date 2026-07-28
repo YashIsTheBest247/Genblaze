@@ -1,0 +1,23 @@
+# OPTIONAL: local Kokoro TTS narration.
+#
+# Not needed to run Flux. The default narration backend is Edge TTS (free, no
+# API key, no local model), which is in requirements.txt.
+#
+# Install this only if you want fully-offline narration:
+#     pip install -r requirements-kokoro.txt
+#     # then set TTS_PROVIDER=kokoro
+#
+# Cost of doing so: ~600 MB of extra dependencies and a ~1.5 GB peak during the
+# first render, plus a one-time ~350 MB model download. That combination
+# OOM-killed the container on every deploy, which is why it is not the default.
+# Fine on a laptop or an instance with >=2 GB RAM.
+
+soundfile
+kokoro
+misaki
+
+# CPU-only torch: the +cpu local version lives on the pytorch index and keeps the
+# install lean (default PyPI torch on Linux pulls the multi-GB CUDA wheel).
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.12.1+cpu
+transformers

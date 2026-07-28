@@ -27,17 +27,16 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    # Kokoro/spaCy model downloads land here on first render.
-    HF_HOME=/app/.cache/huggingface \
-    NUMBA_CACHE_DIR=/tmp/numba
+    # Only used if someone installs the optional Kokoro extras.
+    HF_HOME=/app/.cache/huggingface
 
-# System libs: build tools (sgmllib3k compiles), ffmpeg, audio + opencv runtime.
+# System libs: build tools (sgmllib3k compiles) and ffmpeg for encoding.
+# The image deliberately does NOT install torch/Kokoro (see requirements.txt):
+# narration runs through Edge TTS, so there is no local model to load and no
+# 1.5 GB memory spike to survive.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     ffmpeg \
-    libsndfile1 \
-    libglib2.0-0 \
-    libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
