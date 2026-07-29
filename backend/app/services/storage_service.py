@@ -90,6 +90,9 @@ class B2StorageService:
         # meta.json is immutable once written, so caching it avoids an extra GET
         # per library card on every /videos/list call.
         self._meta_cache: Dict[str, Dict[str, Any]] = {}
+        # (key, ttl) -> (url, reuse_until). Keeps presigned URLs stable so the
+        # browser can cache the media they point at.
+        self._url_cache: Dict[tuple, tuple] = {}
 
     # -- lifecycle ----------------------------------------------------
 
@@ -234,17 +237,36 @@ class B2StorageService:
     # -- read ---------------------------------------------------------
 
     def presign(self, key: Optional[str], expires_in: Optional[int] = None) -> Optional[str]:
-        """Presigned GET URL for a key (the bucket itself stays private)."""
+        """
+        Presigned GET URL for a key (the bucket itself stays private).
+
+        URLs are cached and reused until they near expiry. Signing is cheap, but
+        a *fresh signature every call* produces a different URL every time, which
+        defeats the browser cache: the library re-downloads every thumbnail on
+        each poll (every 2.5s during a render). That burned through the bucket's
+        daily download cap and B2 began returning 403 for all media. Returning a
+        stable URL lets the browser cache normally.
+        """
         backend = self.backend
         if backend is None or not key:
             return None
+
+        ttl = expires_in or settings.B2_URL_TTL_SECONDS
+        now = time.time()
+        cached = self._url_cache.get((key, ttl))
+        if cached and cached[1] > now:
+            return cached[0]
+
         try:
-            return backend.presigned_get_url(
-                key, expires_in=expires_in or settings.B2_URL_TTL_SECONDS
-            )
+            url = backend.presigned_get_url(key, expires_in=ttl)
         except Exception as e:  # noqa: BLE001
             logger.error("Presign failed for %s: %s", key, e)
             return None
+
+        # Retire the cached URL well before the signature actually expires, so a
+        # page opened just before the boundary still has a usable link.
+        self._url_cache[(key, ttl)] = (url, now + max(60, ttl * 0.5))
+        return url
 
     def read_json(self, key: str) -> Optional[Dict[str, Any]]:
         backend = self.backend
@@ -357,6 +379,11 @@ class B2StorageService:
         try:
             result = backend.delete_prefix(self.video_prefix(stem) + "/", dry_run=False)
             self._meta_cache.pop(stem, None)
+            # Drop any cached URLs for this video so a deleted item can't be
+            # served from cache after the objects are gone.
+            prefix = self.video_prefix(stem) + "/"
+            for cache_key in [k for k in self._url_cache if k[0].startswith(prefix)]:
+                self._url_cache.pop(cache_key, None)
             deleted = getattr(result, "deleted", None)
             count = len(deleted) if isinstance(deleted, (list, tuple)) else (deleted or 0)
             logger.info("Deleted %s objects for %s from B2", count, stem)

@@ -15,7 +15,8 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
     const title = video.topic || titleFromFilename(video.name);
     const src = mediaUrl(video.path);
     const poster = video.thumbnail ? mediaUrl(video.thumbnail) : undefined;
-    const [duration, setDuration] = useState(null);
+    // Served by the API from the render's stored metadata — no media fetch needed.
+    const duration = video.duration_sec;
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef(null);
     const onB2 = video.storage === 'b2';
@@ -51,15 +52,29 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
                 onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onPlay?.(video)}
                 className="relative aspect-[4/3] w-full cursor-pointer overflow-hidden rounded-xl border border-tint/10 bg-black/60 transition-all duration-300 hover:border-tint/30 hover:shadow-card"
             >
-                <video
-                    preload="metadata"
-                    src={src}
-                    poster={poster}
-                    muted
-                    playsInline
-                    onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-                    className="pointer-events-none h-full w-full object-cover opacity-90 transition-transform duration-500 group-hover:scale-105"
-                />
+                {/* Thumbnail only — never the video.
+                    This used to be a <video preload="metadata">, which made the
+                    library download a chunk of EVERY video from B2 on every load
+                    and on every poll during a render, just to read a duration.
+                    That exhausted the bucket's daily download cap and B2 started
+                    returning 403 for all media. The duration comes from the API
+                    now, and the video is fetched only when you open the player. */}
+                {poster ? (
+                    <img
+                        src={poster}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        className="pointer-events-none h-full w-full object-cover opacity-90 transition-transform duration-500 group-hover:scale-105"
+                    />
+                ) : (
+                    <div className="pointer-events-none grid h-full w-full place-items-center bg-tint/[0.04]">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" className="h-8 w-8 text-faint">
+                            <rect x="3" y="5" width="18" height="14" rx="2" />
+                            <path d="m10 9 5 3-5 3z" />
+                        </svg>
+                    </div>
+                )}
 
                 {/* play overlay */}
                 <span className="pointer-events-none absolute inset-0 grid place-items-center bg-black/10 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
