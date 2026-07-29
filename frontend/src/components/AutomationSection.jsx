@@ -24,8 +24,11 @@ function ArticleRow({ article, index, willProcess, onGenerate, busy }) {
     const keywords = (article.keywords ?? []).slice(0, 3);
 
     return (
+        // flex-wrap so the action column drops to its own line on a phone. Pinned
+        // beside the title it left the headline roughly 190px on a 360px screen,
+        // which broke every article into four cramped lines.
         <div
-            className="group flex animate-fadeup items-start gap-4 rounded-xl border border-tint/10 bg-tint/[0.02] p-4 transition-all hover:border-tint/25 hover:bg-tint/[0.05]"
+            className="group flex animate-fadeup flex-wrap items-start gap-x-3 gap-y-3 rounded-xl border border-tint/10 bg-tint/[0.02] p-3.5 transition-all hover:border-tint/25 hover:bg-tint/[0.05] sm:flex-nowrap sm:gap-4 sm:p-4"
             style={{ animationDelay: `${index * 60}ms`, animationFillMode: 'backwards' }}
         >
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-tint/15 bg-tint/[0.06] text-xs font-bold text-txt">
@@ -59,7 +62,7 @@ function ArticleRow({ article, index, willProcess, onGenerate, busy }) {
                 )}
             </div>
 
-            <div className="flex shrink-0 flex-col items-end gap-2">
+            <div className="ml-11 flex w-full shrink-0 flex-row-reverse items-center justify-end gap-2 sm:ml-0 sm:w-auto sm:flex-col sm:items-end">
                 {willProcess && (
                     <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-[0.55rem] font-bold uppercase tracking-[0.12em] text-accent">
                         Will process

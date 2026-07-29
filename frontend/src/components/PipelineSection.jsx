@@ -140,11 +140,11 @@ export function PipelineSection({ mode, activeStepKey, statusText }) {
     const dotLeft = ((dotIndex + 0.5) / count) * 100;
 
     return (
-        <section id="pipeline" className="mx-auto max-w-7xl px-5 py-12 lg:px-8">
-            <div className="mb-10 flex flex-wrap items-end justify-between gap-4">
+        <section id="pipeline" className="mx-auto max-w-7xl px-4 py-10 sm:px-5 sm:py-12 lg:px-8">
+            <div className="mb-6 flex flex-wrap items-end justify-between gap-3 sm:mb-10 sm:gap-4">
                 <div>
                     <span className="eyebrow">Live render</span>
-                    <h2 className="display mt-2 text-3xl font-semibold sm:text-4xl">Pipeline</h2>
+                    <h2 className="display mt-2 text-2xl font-semibold sm:text-4xl">Pipeline</h2>
                 </div>
                 <span className="chip">
                     <span
@@ -162,8 +162,12 @@ export function PipelineSection({ mode, activeStepKey, statusText }) {
                 </span>
             </div>
 
-            <div className="glass overflow-x-auto p-8 lg:p-12">
-                <div className="relative min-w-[680px]">
+            {/* Ten stages will never fit a phone, so the strip scrolls horizontally
+                inside its own container and the page body never moves sideways.
+                min-width was 680px when there were eight stages; the two added
+                (Provenance, Backblaze B2) were cramming the icons. */}
+            <div className="glass overflow-x-auto p-5 sm:p-8 lg:p-12">
+                <div className="relative min-w-[860px]">
                     {/* dashed base line */}
                     <div
                         className="absolute top-7 border-t border-dashed border-tint/15"
