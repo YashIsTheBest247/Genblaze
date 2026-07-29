@@ -1,7 +1,10 @@
+// Order must match the order the sections actually appear in App.jsx
+// (Hero -> Automation -> Pipeline -> Library), otherwise the nav jumps
+// backwards up the page.
 export const navLinks = [
     { id: 'top', label: 'Dashboard' },
-    { id: 'pipeline', label: 'Pipeline' },
     { id: 'automation', label: 'Automation' },
+    { id: 'pipeline', label: 'Pipeline' },
     { id: 'library', label: 'Library' },
 ];
 
