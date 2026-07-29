@@ -175,12 +175,23 @@ export function App() {
         const target = pendingDelete;
         setPendingDelete(null);
         if (!target) return;
+
+        // Drop the card immediately rather than waiting on the round trip. The
+        // B2 listing stays authoritative — the refresh below reconciles, so a
+        // failed delete puts the card straight back.
+        setVideos((current) => current.filter((video) => video.name !== target.name));
+
         try {
             await deleteVideo(target.name);
-            await refreshLibrary();
         } catch (error) {
-            console.error('Failed to delete video:', error);
-            window.alert(error.message || 'Could not delete the video.');
+            // A 404 means it is already gone, which is the outcome we wanted.
+            const alreadyGone = /not found/i.test(error?.message || '');
+            if (!alreadyGone) {
+                console.error('Failed to delete video:', error);
+                window.alert(error.message || 'Could not delete the video.');
+            }
+        } finally {
+            await refreshLibrary();
         }
     }
 

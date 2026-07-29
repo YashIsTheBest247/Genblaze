@@ -1,0 +1,39 @@
+# Keeps `railway up` from uploading things the build doesn't need.
+# Without this the CLI would push the local venv (~2 GB) and ~180 MB of
+# previously-rendered videos on every deploy.
+#
+# Mirrors .dockerignore — see that file for the reasoning. The image builds
+# from the Dockerfile either way; this only governs what the CLI uploads.
+
+# Environments and caches
+**/venv/
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.cache/
+frontend/dist/
+
+# Local media — Backblaze B2 is the library
+backend/static/videos/
+backend/static/app/
+backend/resources/images/
+backend/resources/audio/
+backend/resources/video/
+backend/resources/subtitles/
+backend/uploads/
+
+# Secrets — never upload
+**/.env
+**/.env.*
+!**/.env.example
+backend/secrets/
+**/*_client_secret.json
+**/*_token.json
+
+# VCS and tooling
+.git/
+**/*.log
+.vscode/
+.idea/
