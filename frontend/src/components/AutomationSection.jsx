@@ -102,6 +102,13 @@ export function AutomationSection({ onGenerate, onRunAutomation, isGenerating })
         void load();
     }, [load]);
 
+    // Show exactly the articles that will be processed. The list previously
+    // rendered the whole fetched pool while the heading reported `count`, so the
+    // label was a lie and the selector appeared to do nothing.
+    // A pool larger than the max selectable count is still fetched so switching
+    // 1 -> 3 -> 5 is instant and survives an article being filtered out.
+    const visible = articles.slice(0, count);
+
     async function handleRun() {
         setRunNotice('');
         try {
@@ -214,7 +221,10 @@ export function AutomationSection({ onGenerate, onRunAutomation, isGenerating })
                 <div className="mt-9">
                     <h3 className="mb-4 text-sm font-semibold text-txt">
                         Top Trending Articles{' '}
-                        <span className="text-muted">(showing top {Math.min(count, articles.length) || count})</span>
+                        <span className="text-muted">
+                            (showing top {visible.length}
+                            {articles.length > visible.length ? ` of ${articles.length} ranked` : ''})
+                        </span>
                     </h3>
 
                     {error ? (
@@ -227,13 +237,13 @@ export function AutomationSection({ onGenerate, onRunAutomation, isGenerating })
                                 <div key={i} className="h-24 animate-pulse rounded-xl bg-tint/[0.05]" />
                             ))}
                         </div>
-                    ) : articles.length === 0 ? (
+                    ) : visible.length === 0 ? (
                         <p className="rounded-xl border border-tint/10 p-6 text-center text-sm text-muted">
                             No fresh trending articles right now.
                         </p>
                     ) : (
                         <div className="grid gap-3">
-                            {articles.map((article, i) => (
+                            {visible.map((article, i) => (
                                 <ArticleRow
                                     key={article.link || i}
                                     article={article}

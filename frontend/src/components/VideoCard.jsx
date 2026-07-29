@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { mediaUrl } from '../api/client.js';
 import { titleFromFilename } from '../lib/payload.js';
 
@@ -17,7 +17,29 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
     const poster = video.thumbnail ? mediaUrl(video.thumbnail) : undefined;
     const [duration, setDuration] = useState(null);
     const [menuOpen, setMenuOpen] = useState(false);
+    const menuRef = useRef(null);
     const onB2 = video.storage === 'b2';
+
+    // Close on an outside click rather than on the trigger's blur.
+    //
+    // The previous approach unmounted the menu 150 ms after the button lost
+    // focus. Focus is lost on mousedown, so any click held longer than that
+    // removed the item between mousedown and mouseup — the click event then
+    // never fired and the action silently did nothing. That is why Delete
+    // appeared broken while the API was fine: no request was ever sent.
+    useEffect(() => {
+        if (!menuOpen) return undefined;
+        const onPointerDown = (event) => {
+            if (!menuRef.current?.contains(event.target)) setMenuOpen(false);
+        };
+        const onKey = (event) => event.key === 'Escape' && setMenuOpen(false);
+        document.addEventListener('mousedown', onPointerDown);
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('mousedown', onPointerDown);
+            document.removeEventListener('keydown', onKey);
+        };
+    }, [menuOpen]);
 
     return (
         <article className="group flex flex-col">
@@ -94,12 +116,13 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
                     </p>
                 </div>
 
-                <div className="relative shrink-0">
+                <div className="relative shrink-0" ref={menuRef}>
                     <button
                         type="button"
                         aria-label="More actions"
+                        aria-haspopup="menu"
+                        aria-expanded={menuOpen}
                         onClick={() => setMenuOpen((v) => !v)}
-                        onBlur={() => window.setTimeout(() => setMenuOpen(false), 150)}
                         className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-tint/[0.08] hover:text-txt"
                     >
                         <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
@@ -120,14 +143,20 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
                             </a>
                             <button
                                 type="button"
-                                onClick={() => onShowProvenance?.(video)}
+                                onClick={() => {
+                                    setMenuOpen(false);
+                                    onShowProvenance?.(video);
+                                }}
                                 className="block w-full px-3 py-2 text-left text-xs font-medium text-txt transition-colors hover:bg-tint/[0.08]"
                             >
                                 Provenance
                             </button>
                             <button
                                 type="button"
-                                onClick={() => onRequestDelete?.({ name: video.name, title })}
+                                onClick={() => {
+                                    setMenuOpen(false);
+                                    onRequestDelete?.({ name: video.name, title });
+                                }}
                                 className="block w-full px-3 py-2 text-left text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10"
                             >
                                 Delete
