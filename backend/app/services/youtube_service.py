@@ -75,6 +75,51 @@ def _load_credentials() -> Credentials:
     return creds
 
 
+def readiness() -> dict:
+    """
+    Can this deployment publish to YouTube? Reported by /health.
+
+    Deliberately offline — it inspects the stored credentials rather than
+    calling Google, so the health endpoint stays fast and quota-free. A
+    configured-but-revoked token still reports ready; the upload itself is
+    where that surfaces.
+    """
+    import json
+
+    token_json = (settings.YOUTUBE_TOKEN_JSON or "").strip()
+    token_file: Path = settings.YOUTUBE_TOKEN_FILE
+    source = None
+    detail = None
+
+    if token_json:
+        source = "YOUTUBE_TOKEN_JSON"
+        try:
+            data = json.loads(token_json)
+            if not data.get("refresh_token"):
+                detail = "token has no refresh_token — it will stop working once it expires"
+        except Exception as exc:  # noqa: BLE001
+            return {"configured": True, "ready": False, "source": source,
+                    "error": f"not valid token JSON: {exc}"}
+    elif token_file and token_file.exists():
+        source = str(token_file)
+    else:
+        return {
+            "configured": False,
+            "ready": False,
+            "source": None,
+            "error": "No YouTube credentials. Set YOUTUBE_TOKEN_JSON to publish.",
+        }
+
+    return {
+        "configured": True,
+        "ready": True,
+        "source": source,
+        "auto_upload": settings.YOUTUBE_AUTO_UPLOAD,
+        "privacy_status": settings.YOUTUBE_PRIVACY_STATUS,
+        "warning": detail,
+    }
+
+
 def _build_client():
     creds = _load_credentials()
     return build("youtube", "v3", credentials=creds, cache_discovery=False)

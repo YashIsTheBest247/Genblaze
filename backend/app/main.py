@@ -97,10 +97,12 @@ async def health_check():
     optional integration is unconfigured — `ready` tells you whether the app can
     actually render, and `checks` says exactly what is missing.
     """
+    from app.services import youtube_service
     from app.services.genblaze_service import genblaze
     from app.services.storage_service import storage
 
     b2 = storage.status()
+    youtube = youtube_service.readiness()
     checks = {
         "script_llm": bool(settings.GEMINI_API_KEY) or settings.SCRIPT_PROVIDER == "ollama",
         "backblaze_b2": b2["available"],
@@ -108,6 +110,7 @@ async def health_check():
         "genblaze_sink": genblaze.status()["sink"] is not None,
         "stock_images": bool(settings.PEXELS_API_KEY),
         "gmi_cloud": settings.gmi_configured,
+        "youtube_publishing": youtube["ready"],
     }
     return {
         "status": "healthy",
@@ -119,6 +122,7 @@ async def health_check():
         "checks": checks,
         "backblaze_b2": b2,
         "genblaze": genblaze.status(),
+        "youtube": youtube,
     }
 
 
