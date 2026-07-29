@@ -195,13 +195,17 @@ export function App() {
         }
     }
 
-    function handleGenerateFromArticle(article) {
+    // `options` carries the Automation panel's current auto-publish toggle. It
+    // used to hardcode autoPublish:true and privacy:'unlisted', so the per-article
+    // Generate button published every render regardless of the switch, and always
+    // unlisted — the toggle looked decorative because it was.
+    function handleGenerateFromArticle(article, { autoPublish = false } = {}) {
         handleGenerate({
             topic: article.title,
             duration: 60,
             keyPoints: (article.keywords ?? []).join(', '),
-            autoPublish: true,
-            privacy: 'unlisted',
+            autoPublish,
+            privacy: 'public',
         }).catch((error) => {
             window.alert(error.message || 'Could not start generation.');
         });

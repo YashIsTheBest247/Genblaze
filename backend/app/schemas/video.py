@@ -15,9 +15,15 @@ class VideoGenerationRequest(BaseModel):
         default=False,
         description="When true, the finished video is auto-published to YouTube."
     )
-    privacy_status: Literal["unlisted", "public", "private"] = Field(
-        default="unlisted",
-        description="YouTube visibility for the published video."
+    privacy_status: Optional[Literal["unlisted", "public", "private"]] = Field(
+        default=None,
+        description=(
+            "YouTube visibility for the published video. When omitted, falls back "
+            "to YOUTUBE_PRIVACY_STATUS. It must default to None rather than a "
+            "literal: the trending scheduler builds this request without a "
+            "privacy_status, so a hardcoded default here silently overrode the "
+            "configured setting and published every scheduled video unlisted."
+        )
     )
 
     class Config:

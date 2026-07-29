@@ -564,19 +564,36 @@ class VideoGenerationService:
             # (vertical, <=60s) video as a Short.
             base_title = request.topic.strip()
             title = f"{base_title} #Shorts"[:100]
+
             description_parts = [f"{base_title}\n"]
             if request.key_points:
                 description_parts.append("In this video:")
                 description_parts.extend(f"- {point}" for point in request.key_points)
-            description_parts.append("\n#Shorts #shorts #viral")
+                description_parts.append("")
+
+            # Attribution and AI disclosure on every upload. YouTube requires
+            # synthetic content to be flagged, and since each render ships with a
+            # verifiable provenance manifest, saying so is an asset rather than a
+            # disclaimer. Deliberately no "#viral" — irrelevant tags read as spam
+            # and cost more credibility than they win reach on a news channel.
+            description_parts.extend([
+                "Sourced from Economic Times.",
+                "Narration and visuals are AI-generated from reported news. Every "
+                "video is published with a verifiable record of how it was made.",
+                "",
+                "Not investment advice.",
+                "",
+                "#Shorts #StockMarket #Sensex #Nifty",
+            ])
             description = "\n".join(description_parts)
 
             result = upload_video(
                 file_path=video_path,
                 title=title,
                 description=description,
-                tags=settings.youtube_tags_list + ["shorts", "viral"],
-                privacy_status=request.privacy_status,
+                tags=settings.youtube_tags_list + ["shorts"],
+                # Explicit request wins; otherwise the configured default.
+                privacy_status=request.privacy_status or settings.YOUTUBE_PRIVACY_STATUS,
             )
             logger.info(f"Published to YouTube: {result['url']}")
         except YouTubeServiceError as e:

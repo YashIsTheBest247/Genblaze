@@ -46,6 +46,8 @@ backend/static/app/
 backend/secrets/
 *_client_secret.json
 *_token.json
+# Scratch copy of the token for pasting into a host's env vars
+token_oneline.txt
 
 # Logs
 *.log

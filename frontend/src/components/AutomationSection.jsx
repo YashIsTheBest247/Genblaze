@@ -249,7 +249,7 @@ export function AutomationSection({ onGenerate, onRunAutomation, isGenerating })
                                     article={article}
                                     index={i}
                                     willProcess={i < count}
-                                    onGenerate={onGenerate}
+                                    onGenerate={(a) => onGenerate?.(a, { autoPublish })}
                                     busy={isGenerating}
                                 />
                             ))}

@@ -2,9 +2,12 @@ import { useState } from 'react';
 import { navLinks } from '../data/options.js';
 import { ThemeToggle } from './ThemeToggle.jsx';
 
+// The channel the pipeline publishes to. Uses the /channel/<id> form rather than
+// the handle: the ID is permanent, whereas a handle is released the moment it is
+// changed and can then be claimed by anyone.
 const channelUrl =
     import.meta.env.VITE_FLUX_CHANNEL_URL?.trim() ||
-    'https://youtube.com/@echoesofmyindia?si=q-RwYc6p1VVCCtD_';
+    'https://www.youtube.com/channel/UCH8ePQPiHZfqYYgE2Wk4UCw';
 
 function YouTubeIcon({ className }) {
     return (
