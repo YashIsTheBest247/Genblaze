@@ -7,6 +7,66 @@ from typing import Dict, List, Optional
 from google import genai
 from google.genai import types
 
+# Gemini's free tier caps generate_content per PROJECT PER DAY (20 requests), and
+# a render spends two. So the limit that actually stops a day's work is not the
+# per-minute rate limit — it is the daily one, and no amount of backoff clears it.
+# Only a different project's key does. These markers identify that case so it can
+# be told apart from a transient 429 that retrying will fix.
+_PER_DAY_QUOTA_MARKERS = (
+    "PerDay",
+    "per day",
+    "GenerateRequestsPerDayPerProject",
+)
+
+
+class GeminiKeyPool:
+    """
+    Rotates through Gemini API keys as each one's daily quota runs out.
+
+    Holds no timers and no reset logic: a key marked exhausted stays exhausted for
+    the life of the process. Google resets the daily counter on its own schedule
+    (Pacific midnight), and guessing that boundary locally would send renders back
+    to a key that is still empty. A restart re-arms every key.
+    """
+
+    def __init__(self, keys: List[str]):
+        seen = []
+        for key in keys or []:
+            key = (key or "").strip()
+            if key and key not in seen:
+                seen.append(key)
+        self.keys: List[str] = seen
+        self._index = 0
+        self._exhausted: set = set()
+
+    def __bool__(self) -> bool:
+        return bool(self.keys)
+
+    def current(self) -> Optional[str]:
+        """The key to use now, or None when every key is spent."""
+        if self._index >= len(self.keys):
+            return None
+        return self.keys[self._index]
+
+    def mark_exhausted(self) -> Optional[str]:
+        """
+        Retire the current key and return the next usable one (None if none left).
+        """
+        spent = self.current()
+        if spent:
+            self._exhausted.add(spent)
+        self._index += 1
+        return self.current()
+
+    def status(self) -> Dict:
+        """Remaining capacity, for logging and /health."""
+        return {
+            "configured": len(self.keys),
+            "available": max(0, len(self.keys) - len(self._exhausted)),
+            "exhausted": len(self._exhausted),
+        }
+
+
 class VideoScriptGenerator:
     def __init__(
         self,
@@ -15,18 +75,22 @@ class VideoScriptGenerator:
         provider: str = "gemini",
         ollama_model: str = "llama3.2",
         ollama_base_url: str = "http://localhost:11434",
+        api_keys: Optional[List[str]] = None,
     ):
         self.provider = (provider or "gemini").lower()
         self.model = model
         self.ollama_model = ollama_model
         self.ollama_base_url = ollama_base_url.rstrip("/")
+        # `api_keys` supersedes `api_key` when given; `api_key` alone still works
+        # so existing callers need no change.
+        self.key_pool = GeminiKeyPool(api_keys if api_keys else ([api_key] if api_key else []))
         # Only create the Gemini client when actually using Gemini AND a key is
         # present. A missing key must not crash construction — the service is
         # instantiated at import time, and the app has to boot far enough to
         # report the missing key on /health instead of failing to start.
         self.client = None
-        if self.provider == "gemini" and api_key:
-            self.client = genai.Client(api_key=api_key)
+        if self.provider == "gemini":
+            self._activate(self.key_pool.current())
 
         self.system_prompt_segmentation = """
         You are a professional video script segmenter.  
@@ -79,6 +143,14 @@ class VideoScriptGenerator:
             }]
         }
         """
+
+    def _activate(self, key: Optional[str]) -> bool:
+        """Point the client at `key`. False when there is no key left to use."""
+        if not key:
+            self.client = None
+            return False
+        self.client = genai.Client(api_key=key)
+        return True
 
     def _search_web(self, query: str) -> str:
         """
@@ -145,7 +217,11 @@ class VideoScriptGenerator:
 
         transient_markers = ("503", "429", "500", "UNAVAILABLE", "overloaded", "high demand", "RESOURCE_EXHAUSTED")
         last_error = None
-        for attempt in range(max_retries):
+        # Counted by hand rather than with `for attempt in range(...)`: rotating to
+        # a fresh key is not a retry of a failed attempt, it is the first attempt on
+        # new quota, so it must not spend one of the budgeted retries.
+        attempt = 0
+        while attempt < max_retries:
             try:
                 config_kwargs = dict(
                     system_instruction=system_prompt,
@@ -169,6 +245,26 @@ class VideoScriptGenerator:
             except Exception as e:  # noqa: BLE001
                 last_error = e
                 msg = str(e)
+
+                # Daily quota gone on this key. Backoff cannot help — only another
+                # project's key can — so rotate before the transient check, which
+                # would otherwise sleep through a 429 that never clears.
+                if any(m in msg for m in _PER_DAY_QUOTA_MARKERS):
+                    next_key = self.key_pool.mark_exhausted()
+                    status = self.key_pool.status()
+                    if self._activate(next_key):
+                        print(
+                            "Gemini daily quota exhausted on this key; switching to "
+                            f"key {status['exhausted'] + 1} of {status['configured']}."
+                        )
+                        continue
+                    raise RuntimeError(
+                        "Every Gemini key has hit its daily free-tier quota "
+                        f"({status['configured']} configured). Add another key to "
+                        "GEMINI_API_KEYS, wait for the daily reset, or set "
+                        "SCRIPT_PROVIDER=ollama to generate scripts locally."
+                    )
+
                 is_transient = any(m in msg for m in transient_markers)
                 if is_transient and attempt < max_retries - 1:
                     # Honor the server's suggested delay (e.g. "retry in 36s") for
@@ -179,6 +275,7 @@ class VideoScriptGenerator:
                     else:
                         wait = 2 * (attempt + 1)
                     print(f"Gemini transient error (attempt {attempt + 1}); retrying in {wait:.0f}s...")
+                    attempt += 1
                     time.sleep(wait)
                     continue
                 raise RuntimeError(f"Gemini API call failed: {msg}")

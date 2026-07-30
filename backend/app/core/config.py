@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # degraded /health readiness report rather than a container that won't boot.
     GEMINI_API_KEY: str = Field(default="", env="GEMINI_API_KEY")
 
+    # Additional Gemini keys, comma-separated. The free tier caps generate_content
+    # at 20 requests PER DAY per project, and one render spends two of them, so a
+    # single key runs dry after ~10 videos. Each extra key here is a separate
+    # project quota the script generator rotates to when the current one reports a
+    # per-day exhaustion.
+    GEMINI_API_KEYS: str = Field(default="", env="GEMINI_API_KEYS")
+
     # Pexels API key - primary source for scene images (optional; falls back to Gemini)
     PEXELS_API_KEY: str = Field(default="", env="PEXELS_API_KEY")
 
@@ -54,7 +61,24 @@ class Settings(BaseSettings):
     SCRIPT_PROVIDER: str = Field(default="gemini", env="SCRIPT_PROVIDER")
     OLLAMA_MODEL: str = Field(default="llama3.2", env="OLLAMA_MODEL")
     OLLAMA_BASE_URL: str = Field(default="http://localhost:11434", env="OLLAMA_BASE_URL")
-    
+
+    @property
+    def gemini_api_keys_list(self) -> List[str]:
+        """
+        Every Gemini key available to the script generator, primary first.
+
+        Deduplicated because pasting the primary key into GEMINI_API_KEYS as well
+        is an easy mistake, and a duplicate would make the pool believe it has
+        spare quota it does not have.
+        """
+        raw = [self.GEMINI_API_KEY] + self.GEMINI_API_KEYS.split(",")
+        keys: List[str] = []
+        for key in raw:
+            key = key.strip()
+            if key and key not in keys:
+                keys.append(key)
+        return keys
+
     # Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
     STATIC_DIR: Optional[Path] = Field(default=None)

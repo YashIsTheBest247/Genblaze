@@ -65,6 +65,7 @@ class VideoGenerationService:
     def __init__(self):
         self.script_generator = VideoScriptGenerator(
             api_key=settings.GEMINI_API_KEY,
+            api_keys=settings.gemini_api_keys_list,
             model=settings.GEMINI_TEXT_MODEL,
             provider=settings.SCRIPT_PROVIDER,
             ollama_model=settings.OLLAMA_MODEL,
