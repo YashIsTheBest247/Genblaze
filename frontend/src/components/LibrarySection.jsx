@@ -77,16 +77,20 @@ export function LibrarySection({
                         </p>
                     </div>
                 ) : (
-                    <div className="grid gap-x-6 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                    /* Two columns from the smallest screen up. A single-column
+                       grid gave each phone-width card the full viewport, so one
+                       video filled the screen and the library read as a feed
+                       rather than a library. */
+                    <div className="grid grid-cols-2 gap-x-3 gap-y-6 sm:gap-x-6 sm:gap-y-8 md:grid-cols-3 xl:grid-cols-4">
                         {showAwaiting && (
                             <article className="flex flex-col">
-                                <div className="grid aspect-[4/3] w-full place-items-center rounded-xl border border-tint/10 bg-tint/[0.03]">
+                                <div className="grid aspect-[9/16] w-full place-items-center rounded-xl border border-tint/10 bg-tint/[0.03]">
                                     <div className="flex flex-col items-center gap-2">
                                         <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" />
-                                        <p className="text-sm font-semibold text-txt">Rendering</p>
+                                        <p className="text-xs font-semibold text-txt sm:text-sm">Rendering</p>
                                     </div>
                                 </div>
-                                <p className="mt-3 truncate text-sm font-semibold text-muted">
+                                <p className="mt-2 truncate text-xs font-semibold text-muted sm:mt-3 sm:text-sm">
                                     Generating…
                                 </p>
                             </article>

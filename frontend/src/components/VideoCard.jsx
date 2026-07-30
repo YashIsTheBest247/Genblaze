@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { mediaUrl } from '../api/client.js';
-import { titleFromFilename } from '../lib/payload.js';
+import { decodeEntities, titleFromFilename } from '../lib/payload.js';
 
 function formatDuration(seconds) {
     if (!seconds || Number.isNaN(seconds)) return null;
@@ -12,7 +12,7 @@ function formatDuration(seconds) {
 export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvenance }) {
     // The backend sends the human topic for B2-backed videos; older local-only
     // files only have a filename to derive a title from.
-    const title = video.topic || titleFromFilename(video.name);
+    const title = decodeEntities(video.topic) || titleFromFilename(video.name);
     const src = mediaUrl(video.path);
     const poster = video.thumbnail ? mediaUrl(video.thumbnail) : undefined;
     // Served by the API from the render's stored metadata — no media fetch needed.
@@ -44,13 +44,15 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
 
     return (
         <article className="group flex flex-col">
-            {/* thumbnail */}
+            {/* Thumbnail, 9:16 to match the thumbnail image and the video itself.
+                In a 4:3 box object-cover cropped away most of a 720x1280
+                thumbnail — including the headline set across its lower third. */}
             <div
                 onClick={() => onPlay?.(video)}
                 role="button"
                 tabIndex={0}
                 onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onPlay?.(video)}
-                className="relative aspect-[4/3] w-full cursor-pointer overflow-hidden rounded-xl border border-tint/10 bg-black/60 transition-all duration-300 hover:border-tint/30 hover:shadow-card"
+                className="relative aspect-[9/16] w-full cursor-pointer overflow-hidden rounded-xl border border-tint/10 bg-black/60 transition-all duration-300 hover:border-tint/30 hover:shadow-card"
             >
                 {/* Thumbnail only — never the video.
                     This used to be a <video preload="metadata">, which made the
@@ -78,7 +80,7 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
 
                 {/* play overlay */}
                 <span className="pointer-events-none absolute inset-0 grid place-items-center bg-black/10 opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-                    <span className="grid h-12 w-12 place-items-center rounded-full bg-black/60 text-white backdrop-blur-sm">
+                    <span className="grid h-10 w-10 place-items-center rounded-full bg-black/60 sm:h-12 sm:w-12 text-white backdrop-blur-sm">
                         <svg viewBox="0 0 24 24" fill="currentColor" className="h-5 w-5 translate-x-[1px]">
                             <path d="M8 5v14l11-7z" />
                         </svg>
@@ -86,17 +88,17 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
                 </span>
 
                 {isNew && (
-                    <span className="pointer-events-none absolute left-3 top-3 rounded bg-accent px-2 py-1 text-[0.55rem] font-bold uppercase tracking-[0.1em] text-onprimary">
+                    <span className="pointer-events-none absolute left-2 top-2 rounded bg-accent px-1.5 py-0.5 text-[0.5rem] sm:left-3 sm:top-3 sm:px-2 sm:py-1 sm:text-[0.55rem] font-bold uppercase tracking-[0.1em] text-onprimary">
                         New
                     </span>
                 )}
 
                 {/* storage + provenance badges */}
-                <span className="pointer-events-none absolute right-3 top-3 flex items-center gap-1.5">
+                <span className="pointer-events-none absolute right-2 top-2 flex items-center gap-1 sm:right-3 sm:top-3 sm:gap-1.5">
                     {onB2 && (
                         <span
                             title="Stored durably on Backblaze B2"
-                            className="rounded bg-black/70 px-1.5 py-1 text-[0.55rem] font-bold uppercase tracking-[0.1em] text-white backdrop-blur-sm"
+                            className="rounded bg-black/70 px-1 py-0.5 text-[0.5rem] font-bold uppercase tracking-[0.1em] text-white backdrop-blur-sm sm:px-1.5 sm:py-1 sm:text-[0.55rem]"
                         >
                             B2
                         </span>
@@ -104,7 +106,7 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
                     {video.verified && (
                         <span
                             title="Genblaze manifest verified"
-                            className="grid h-[22px] w-[22px] place-items-center rounded bg-black/70 text-accent backdrop-blur-sm"
+                            className="grid h-[18px] w-[18px] place-items-center rounded bg-black/70 text-accent backdrop-blur-sm sm:h-[22px] sm:w-[22px]"
                         >
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3.5 w-3.5">
                                 <path d="M12 3 5 6v5.5c0 4.3 2.9 8.3 7 9.5 4.1-1.2 7-5.2 7-9.5V6z" />
@@ -115,18 +117,21 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
                 </span>
 
                 {duration && (
-                    <span className="pointer-events-none absolute bottom-3 right-3 rounded bg-black/75 px-2 py-1 text-[0.65rem] font-semibold text-white">
+                    <span className="pointer-events-none absolute bottom-2 right-2 rounded bg-black/75 px-1.5 py-0.5 text-[0.6rem] sm:bottom-3 sm:right-3 sm:px-2 sm:py-1 sm:text-[0.65rem] font-semibold text-white">
                         {formatDuration(duration)}
                     </span>
                 )}
             </div>
 
             {/* meta */}
-            <div className="mt-3 flex items-start justify-between gap-2">
+            <div className="mt-2 flex items-start justify-between gap-1.5 sm:mt-3 sm:gap-2">
                 <div className="min-w-0">
-                    <h3 className="truncate text-sm font-semibold text-txt">{title}</h3>
-                    <p className="mt-0.5 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-muted">
-                        {onB2 ? 'Backblaze B2' : 'Local'} · Vertical short
+                    <h3 className="line-clamp-2 text-xs font-semibold leading-snug text-txt sm:truncate sm:text-sm">{title}</h3>
+                    {/* Truncated, not wrapped: on a half-width phone card this
+                        line ran to three rows and pushed the grid out of step. */}
+                    <p className="mt-0.5 truncate text-[0.6rem] font-semibold uppercase tracking-[0.1em] text-muted sm:text-[0.65rem] sm:tracking-[0.12em]">
+                        {onB2 ? 'Backblaze B2' : 'Local'}
+                        <span className="hidden sm:inline"> · Vertical short</span>
                         {video.has_provenance ? ' · Provenance' : ''}
                     </p>
                 </div>
@@ -138,7 +143,7 @@ export function VideoCard({ video, isNew, onRequestDelete, onPlay, onShowProvena
                         aria-haspopup="menu"
                         aria-expanded={menuOpen}
                         onClick={() => setMenuOpen((v) => !v)}
-                        className="grid h-7 w-7 place-items-center rounded-md text-muted transition-colors hover:bg-tint/[0.08] hover:text-txt"
+                        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted sm:h-7 sm:w-7 transition-colors hover:bg-tint/[0.08] hover:text-txt"
                     >
                         <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
                             <circle cx="12" cy="5" r="1.6" />

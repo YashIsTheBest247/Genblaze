@@ -65,6 +65,27 @@ def _trim_query(query: str) -> str:
     return " ".join((meaningful or words)[:3])
 
 
+def _relevance(query: str, photo: dict) -> int:
+    """
+    How many meaningful words of the query the photo's own description echoes.
+
+    Pexels never returns nothing — it returns its loosest match and says nothing
+    about how loose it was. Its alt text is written per photo and describes the
+    actual subject, so overlapping content words are a cheap, honest signal of
+    whether a result is on topic at all.
+    """
+    haystack = f"{photo.get('alt') or ''} {photo.get('photographer') or ''}".lower()
+    if not haystack.strip():
+        # No description to judge by. Treat as a weak match rather than a
+        # disqualification, so photos without alt text stay usable.
+        return 1
+    terms = {
+        w.lower() for w in re.findall(r"[A-Za-z']+", query)
+        if len(w) > 2 and w.lower() not in _UNSEARCHABLE
+    }
+    return sum(1 for t in terms if t in haystack)
+
+
 def search_pexels_image(
     query: str,
     api_key: str,
@@ -118,7 +139,19 @@ def search_pexels_image(
             # Prefer an unused photo; fall back to the top hit if every candidate
             # is taken, since a repeat beats an empty scene.
             ordered = [p for p in photos if p.get("id") not in used] or photos[:1]
-            for photo in ordered:
+            # Then prefer the ones that are actually ON TOPIC. Pexels always
+            # returns something, and its ranking degrades quietly: "Indian rupee
+            # banknotes close up" returned Turkish lira and Indian flags. Ranking
+            # by how much of the query the photo's own description echoes puts the
+            # real match first, and the relevant flag below decides whether an
+            # unrelated result is worth using at all.
+            ordered = sorted(ordered, key=lambda p: -_relevance(attempt_query, p))
+            relevant = [p for p in ordered if _relevance(attempt_query, p) > 0]
+            if not relevant and attempt_query != _trim_query(query):
+                # Nothing here matches. A shorter query usually has a much better
+                # pool, so try that before settling for an unrelated photo.
+                continue
+            for photo in (relevant or ordered):
                 image_url = photo["src"].get("large2x") or photo["src"].get("large")
                 if not image_url:
                     continue

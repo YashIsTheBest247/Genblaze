@@ -15,6 +15,17 @@ export function buildVideoPayload({ topic, duration, keyPoints, autoPublish, pri
     };
 }
 
+// Decode the HTML entities that arrive in RSS-sourced topics.
+// Economic Times headlines carry them escaped, so "M&M Q1 Results" reached the
+// card as the literal text "M&amp;M Q1 Results" — React escapes on render, so
+// the entity has to be resolved before it gets there.
+export function decodeEntities(text) {
+    if (!text || !text.includes('&')) return text || '';
+    const el = document.createElement('textarea');
+    el.innerHTML = text;
+    return el.value;
+}
+
 // Derive a human title from a generated video filename.
 // e.g. "the_water_cycle_1717000000.mp4" -> "The Water Cycle"
 export function titleFromFilename(filename) {

@@ -270,7 +270,7 @@ class VideoGenerationService:
                 gemini_api_key=settings.GEMINI_API_KEY,
                 pexels_api_key=settings.PEXELS_API_KEY,
                 gemini_model=settings.IMAGE_GEN_MODEL,
-                aspect_ratio=settings.IMAGE_ASPECT_RATIO,
+                aspect_ratio=settings.image_aspect_ratio_effective,
                 image_provider=settings.IMAGE_PROVIDER,
                 genblaze_generator=self._genblaze_images,
                 source_log=image_sources,
@@ -285,7 +285,7 @@ class VideoGenerationService:
                 "provider": "+".join(used) if used else None,
                 "model": settings.GENBLAZE_IMAGE_MODEL if "genblaze" in used else None,
                 "configured_model": settings.GENBLAZE_IMAGE_MODEL,
-                "aspect_ratio": settings.IMAGE_ASPECT_RATIO,
+                "aspect_ratio": settings.image_aspect_ratio_effective,
                 "per_scene_source": image_sources,
                 "genblaze_run_id": self._last_image_run_id,
             })

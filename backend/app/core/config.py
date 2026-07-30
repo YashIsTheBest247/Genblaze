@@ -109,8 +109,37 @@ class Settings(BaseSettings):
     
     # Image settings - Pexels primary, Gemini fallback
     IMAGE_GEN_MODEL: str = Field(default="gemini-2.5-flash-image", env="IMAGE_GEN_MODEL")
-    IMAGE_ASPECT_RATIO: str = Field(default="1:1", env="IMAGE_ASPECT_RATIO")
-    
+    # Shape of the scene images to search for / generate. Defaults to the vertical
+    # frame the video is actually assembled in.
+    IMAGE_ASPECT_RATIO: str = Field(default="9:16", env="IMAGE_ASPECT_RATIO")
+
+    @property
+    def image_aspect_ratio_effective(self) -> str:
+        """
+        The aspect ratio actually used for scene images.
+
+        Every scene image is cover-cropped to the output frame, so searching in a
+        different shape than the video can only ever hurt: it crops away more of
+        the photo AND draws from a much smaller, worse-matched stock pool. With
+        IMAGE_ASPECT_RATIO=1:1 against a vertical video, "Indian rupee banknotes
+        close up" returned Turkish lira and Indian flags — the square pool simply
+        had no real match, and Pexels returned its loosest one without saying so.
+
+        So a configured ratio whose orientation contradicts the output frame is
+        overridden rather than obeyed. This also protects deployments whose env
+        still carries the old value.
+        """
+        width = int(os.environ.get("FLUX_VIDEO_WIDTH", "480"))
+        height = int(os.environ.get("FLUX_VIDEO_HEIGHT", "854"))
+        frame = "9:16" if height > width else ("16:9" if width > height else "1:1")
+
+        configured = (self.IMAGE_ASPECT_RATIO or "").strip()
+        portrait = {"9:16", "3:4"}
+        landscape = {"16:9", "4:3"}
+        groups = [portrait, landscape, {"1:1"}]
+        same_orientation = any(configured in g and frame in g for g in groups)
+        return configured if same_orientation else frame
+
     # TTS settings
     TTS_LANG_CODE: str = Field(default="b", env="TTS_LANG_CODE")
 
