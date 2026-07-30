@@ -1,0 +1,20 @@
+1
+00:00:02,000 --> 00:00:06,091
+The Sensex climbed today as the India VIX, a key
+
+2
+00:00:06,091 --> 00:00:10,183
+volatility gauge, dropped to its lowest point in three months,
+
+3
+00:00:10,183 --> 00:00:11,820
+signaling eased market uncertainty.
+
+4
+00:00:11,820 --> 00:00:16,097
+Banking stocks led the charge, with major financial institutions showing
+
+5
+00:00:16,097 --> 00:00:19,520
+robust gains and driving the market's positive momentum.
+

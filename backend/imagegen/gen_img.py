@@ -16,9 +16,11 @@ Default flow (IMAGE_PROVIDER=auto):
 All paths are passed as parameters - no hardcoded paths.
 """
 import json
+import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import requests
 from google import genai
@@ -38,52 +40,99 @@ def _orientation_for(aspect_ratio: str) -> str:
     return _ORIENTATION_MAP.get(aspect_ratio, "landscape")
 
 
+# Words that are either grammatical filler or name something that cannot be
+# photographed. Keeping them in a fallback query wastes the retry: "despite
+# uncertainties india" matches nothing useful, while "india" matches plenty.
+_UNSEARCHABLE = {
+    "the", "and", "for", "with", "from", "that", "this", "into", "over", "amid",
+    "despite", "after", "before", "while", "about", "than", "then", "under",
+    "measure", "concept", "abstract", "outlook", "sentiment", "volatility",
+    "uncertainty", "uncertainties", "growth", "momentum", "trend", "trends",
+    "data", "analysis", "report", "reading", "level", "levels", "index",
+}
+
+
+def _trim_query(query: str) -> str:
+    """
+    Shorten a query to its most searchable core.
+
+    Pexels matches all terms, so a long phrase can return nothing while its head
+    nouns return plenty. Drops filler and unphotographable abstractions, then
+    keeps up to three remaining words.
+    """
+    words = [w for w in re.findall(r"[A-Za-z']+", query) if len(w) > 2]
+    meaningful = [w for w in words if w.lower() not in _UNSEARCHABLE]
+    return " ".join((meaningful or words)[:3])
+
+
 def search_pexels_image(
     query: str,
     api_key: str,
     aspect_ratio: str = "1:1",
-) -> Optional[bytes]:
+    exclude_ids: Optional[set] = None,
+) -> Tuple[Optional[bytes], Optional[int]]:
     """
-    Search Pexels for a stock photo matching the query and return its bytes.
+    Search Pexels for a stock photo and return (bytes, photo_id).
+
+    Asks for several candidates rather than one so that:
+      * a photo already used elsewhere in this video can be skipped — with
+        per_page=1 two similar prompts returned the identical image, and the same
+        frame appeared twice in one short;
+      * a failed download falls through to the next candidate instead of the
+        whole scene dropping to the (quota-limited) generation fallback.
+
+    Retries once with a trimmed query when the full phrase matches nothing.
 
     Args:
         query: Search query (the scene prompt)
         api_key: Pexels API key
         aspect_ratio: Desired aspect ratio (mapped to Pexels orientation)
+        exclude_ids: photo ids already used by other scenes
 
     Returns:
-        Image bytes if found, otherwise None
+        (image bytes, photo id), or (None, None) if nothing usable was found
     """
     if not api_key:
-        return None
+        return None, None
 
-    try:
-        response = requests.get(
-            "https://api.pexels.com/v1/search",
-            headers={"Authorization": api_key},
-            params={
-                "query": query,
-                "per_page": 1,
-                "orientation": _orientation_for(aspect_ratio),
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        photos = response.json().get("photos", [])
-        if not photos:
-            return None
+    used = exclude_ids or set()
+    for attempt_query in (query, _trim_query(query)):
+        if not attempt_query:
+            continue
+        try:
+            response = requests.get(
+                "https://api.pexels.com/v1/search",
+                headers={"Authorization": api_key},
+                params={
+                    "query": attempt_query,
+                    "per_page": 8,
+                    "orientation": _orientation_for(aspect_ratio),
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            photos = response.json().get("photos", [])
+            if not photos:
+                continue
 
-        image_url = photos[0]["src"].get("large2x") or photos[0]["src"].get("large")
-        if not image_url:
-            return None
+            # Prefer an unused photo; fall back to the top hit if every candidate
+            # is taken, since a repeat beats an empty scene.
+            ordered = [p for p in photos if p.get("id") not in used] or photos[:1]
+            for photo in ordered:
+                image_url = photo["src"].get("large2x") or photo["src"].get("large")
+                if not image_url:
+                    continue
+                try:
+                    img_response = requests.get(image_url, timeout=30)
+                    img_response.raise_for_status()
+                    return img_response.content, photo.get("id")
+                except Exception as e:  # noqa: BLE001 - try the next candidate
+                    print(f"Pexels download failed ({photo.get('id')}): {e}")
 
-        img_response = requests.get(image_url, timeout=30)
-        img_response.raise_for_status()
-        return img_response.content
+        except Exception as e:  # noqa: BLE001
+            print(f"Pexels lookup failed for '{attempt_query}': {e}")
 
-    except Exception as e:
-        print(f"Pexels lookup failed for '{query}': {e}")
-        return None
+    return None, None
 
 
 def generate_gemini_image(
@@ -130,15 +179,32 @@ def get_image_for_prompt(
     gemini_api_key: str,
     aspect_ratio: str = "1:1",
     gemini_model: str = "gemini-2.5-flash-image",
+    used_ids: Optional[set] = None,
+    used_lock: Optional[threading.Lock] = None,
 ) -> Optional[bytes]:
     """
     Get an image for a prompt: try Pexels first, fall back to Gemini.
 
+    `used_ids` is shared across the scene thread pool so no two scenes in the same
+    video land on the same stock photo. It is claimed under `used_lock` before the
+    bytes are returned, so two threads racing on similar prompts cannot both take
+    the same candidate.
+
     Returns:
         Image bytes, or None if both sources fail.
     """
-    image_bytes = search_pexels_image(prompt, pexels_api_key, aspect_ratio)
+    snapshot = set()
+    if used_ids is not None and used_lock is not None:
+        with used_lock:
+            snapshot = set(used_ids)
+
+    image_bytes, photo_id = search_pexels_image(
+        prompt, pexels_api_key, aspect_ratio, exclude_ids=snapshot
+    )
     if image_bytes:
+        if used_ids is not None and used_lock is not None and photo_id is not None:
+            with used_lock:
+                used_ids.add(photo_id)
         print(f"Pexels match found for: {prompt}")
         return image_bytes
 
@@ -246,6 +312,12 @@ def main_generate_images(
                 print(f"Genblaze image generation unavailable: {e}")
 
     # --- Pass 2: Pexels / direct Gemini for anything still missing --------
+    # Shared across the thread pool so two scenes never claim the same stock
+    # photo. Previously each scene asked for per_page=1 independently, so similar
+    # prompts produced the identical frame twice in one video.
+    used_photo_ids: set = set()
+    used_lock = threading.Lock()
+
     def _source_one(idx: int) -> bool:
         target = targets[idx]
         if target.exists() and target.stat().st_size > 0:
@@ -265,9 +337,16 @@ def main_generate_images(
             # fallback. "genblaze" mode reaches here only for scenes Genblaze
             # could not produce, so it gets the same two-step safety net.
             if provider in ("auto", "genblaze", "pexels"):
-                image_bytes = search_pexels_image(prompt, pexels_api_key, aspect_ratio)
+                with used_lock:
+                    snapshot = set(used_photo_ids)
+                image_bytes, photo_id = search_pexels_image(
+                    prompt, pexels_api_key, aspect_ratio, exclude_ids=snapshot
+                )
                 if image_bytes:
                     used = "pexels"
+                    if photo_id is not None:
+                        with used_lock:
+                            used_photo_ids.add(photo_id)
 
             if not image_bytes and provider in ("auto", "genblaze", "gemini"):
                 image_bytes = generate_gemini_image(prompt, gemini_api_key, gemini_model)

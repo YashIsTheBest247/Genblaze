@@ -24,6 +24,18 @@ SUBTITLE_BOX_W = int(TARGET_W * 0.90)
 SUBTITLE_FONT_SIZE = max(14, int(TARGET_W * 0.055))
 TITLE_FONT_SIZE = max(18, int(TARGET_W * 0.075))
 
+# Vertical placement of the caption block, as a fraction of frame height (0 = top,
+# 1 = bottom). A caption box has auto height and grows downward, so this is the
+# position of its TOP edge — push it too far and a three-line caption runs off the
+# bottom. 0.78 sits the block low in the frame while leaving room for wrapping.
+SUBTITLE_Y = float(os.environ.get("FLUX_SUBTITLE_Y", "0.78"))
+
+# Padding inside the caption's background box, and the gap between wrapped lines.
+# Scaled off the font size so they hold at any output resolution.
+SUBTITLE_PAD_X = max(8, int(SUBTITLE_FONT_SIZE * 0.45))
+SUBTITLE_PAD_Y = max(6, int(SUBTITLE_FONT_SIZE * 0.34))
+SUBTITLE_INTERLINE = max(4, int(SUBTITLE_FONT_SIZE * 0.28))
+
 
 def make_subtitle_clip(text: str, font_path):
     """
@@ -42,6 +54,12 @@ def make_subtitle_clip(text: str, font_path):
         method='caption',
         text_align="center",
         horizontal_align="center",
+        # Auto height came out as exactly lines x font_size, leaving no room for
+        # descenders — the bottom line of a wrapped caption was visibly sliced
+        # through ("India VIX, a key" lost its descenders). The margin pads the
+        # background box; interline opens the gap between wrapped lines.
+        margin=(SUBTITLE_PAD_X, SUBTITLE_PAD_Y),
+        interline=SUBTITLE_INTERLINE,
     )
 
 
@@ -396,7 +414,7 @@ def create_video(
                         make_subtitle_clip(chunk, font_path)
                         .with_duration(chunk_duration)
                         .with_start(Start_duration)
-                        .with_position(('center', 0.72), relative=True)
+                        .with_position(('center', SUBTITLE_Y), relative=True)
                     )
                     subtitle_clips.append(subtitle_clip)
                     Start_duration += chunk_duration
@@ -405,7 +423,7 @@ def create_video(
                     make_subtitle_clip(text, font_path)
                     .with_duration(duration)
                     .with_start(Start_duration)
-                    .with_position(('center', 0.72), relative=True)
+                    .with_position(('center', SUBTITLE_Y), relative=True)
                 )
                 subtitle_clips.append(subtitle_clip)
                 Start_duration += duration

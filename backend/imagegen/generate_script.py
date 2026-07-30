@@ -36,8 +36,8 @@ class VideoScriptGenerator:
         1. Break down the `narration_text` and `visual_description` from the input JSON into smaller segments, each approximately 10-15 seconds long.
         2. Generate timestamps ("00:00", "00:15", "00:30", etc.) for each segment in both `audio_script` and `visual_script`.
         3. Maintain *strict synchronization*: The `timestamp` values *must* be identical for corresponding audio and visual segments, and the number of segments in audio_script *must be same* as the number of segments in visual_script.
-        4. For each visual segment, expand the general `visual_description` into a *simple and realistic* `prompt` suitable for finding images online. The `prompt` must be exactly 5 words long. Include a corresponding `negative_prompt`. 
-        5. Ensure the `prompt` describes a realistic, static image that can be easily found on stock image websites or through web scraping. Avoid abstract or overly complex descriptions.
+        4. For each visual segment, turn the `visual_description` into a `prompt` for a stock-photo search: a concrete, photographable subject in 3-6 words. Include a corresponding `negative_prompt`.
+        5. The subject of a `prompt` must be a physical thing — a place, object, or person doing something. Abstract nouns ("volatility", "sentiment", "growth", "uncertainty") are not photographable and make the search return generic filler; swap them for a physical stand-in. Name real companies, indices, institutions and cities when the story mentions them, and vary the subject across segments.
         6. Choose appropriate values for `speaker`, `speed`, `pitch`, and `emotion` for each audio segment.
         7. Remove unnecessary parameters like `style`, `guidance_scale`, `steps`, `seed`, `width`, and `height` since we are not generating images with Stable Diffusion.
         8. Ensure visual continuity: Use consistent and logical descriptions across consecutive visual segments.
@@ -235,9 +235,27 @@ class VideoScriptGenerator:
         STRICT LENGTH: total spoken narration must be about {target_words} words so the
         finished video runs ~{duration} seconds at ~{words_per_second} words/second. Do not exceed it.
 
-        Break the narration into 5-10 second segments. For each segment provide the narration
-        text and a *realistic, exactly 5-word* image search prompt (something findable on stock
-        photo sites). audio_script and visual_script MUST have the same number of segments.
+        Break the narration into 5-10 second segments. audio_script and visual_script MUST
+        have the same number of segments.
+
+        IMAGE PROMPTS — this is where scripts usually go wrong. Each `prompt` is fed to a
+        stock-photo search, which always returns *something*; a vague query returns a
+        generic office or skyscraper photo that has nothing to do with the story. So:
+
+        - Name a CONCRETE, PHOTOGRAPHABLE subject: a place, object, person doing something,
+          or document. 3 to 6 words.
+        - NEVER use an abstract noun as the subject. "volatility", "sentiment", "outlook",
+          "uncertainty", "growth", "momentum" cannot be photographed. Replace them with a
+          physical stand-in: a trading floor screen, a newspaper front page, a bank counter.
+        - When the story names a real company, index, institution or city, put it in the
+          prompt: "Bombay Stock Exchange building", "Reserve Bank of India facade",
+          "Mumbai skyline at dusk", "Indian rupee banknotes close up".
+        - Vary the subjects across segments. Do not repeat the same subject twice.
+
+        Good:  "Reserve Bank of India building", "Indian rupee notes counting",
+               "Mumbai traders watching screens", "oil refinery pipes sunset"
+        Bad:   "market volatility concept", "business people reviewing data",
+               "financial growth abstract", "economy uncertainty"
 
         Output ONLY this JSON structure:
         {{
@@ -249,7 +267,7 @@ class VideoScriptGenerator:
             ],
             "visual_script": [
                 {{"timestamp_start": "00:00", "timestamp_end": "00:05",
-                  "prompt": "five word realistic image prompt",
+                  "prompt": "concrete photographable subject, 3-6 words",
                   "negative_prompt": "abstract, blurry, text, watermark"}}
             ]
         }}"""
