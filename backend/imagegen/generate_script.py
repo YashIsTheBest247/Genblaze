@@ -91,6 +91,16 @@ class VideoScriptGenerator:
         self.client = None
         if self.provider == "gemini":
             self._activate(self.key_pool.current())
+        # Turning "thinking" off is the biggest single latency win on Flash, but
+        # only some models accept thinkingBudget=0 — the 3.x line (which
+        # gemini-flash-latest now aliases) rejects it with a bare 400
+        # INVALID_ARGUMENT naming no field. Discovery still runs on the first call,
+        # but skipping the probe for models known to refuse saves a wasted round
+        # trip on the first render after every restart.
+        self._thinking_off_supported = not any(
+            marker in (self.model or "").lower()
+            for marker in ("flash-latest", "pro-latest", "gemini-3")
+        )
 
         self.system_prompt_segmentation = """
         You are a professional video script segmenter.  
@@ -161,7 +171,9 @@ class VideoScriptGenerator:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             }
             url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            response = requests.get(url, headers=headers)
+            # Bounded: this sits on the render's critical path, and without a
+            # timeout a slow response would stall the whole pipeline indefinitely.
+            response = requests.get(url, headers=headers, timeout=8)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, "html.parser")
@@ -231,10 +243,13 @@ class VideoScriptGenerator:
                 )
                 # Disable Flash "thinking" — 2-3x lower latency; the JSON mime
                 # type keeps the output on-spec. Ignored if the SDK/model lacks it.
-                try:
-                    config_kwargs["thinkingConfig"] = types.ThinkingConfig(thinkingBudget=0)
-                except Exception:  # noqa: BLE001
-                    pass
+                thinking_requested = False
+                if self._thinking_off_supported:
+                    try:
+                        config_kwargs["thinkingConfig"] = types.ThinkingConfig(thinkingBudget=0)
+                        thinking_requested = True
+                    except Exception:  # noqa: BLE001
+                        pass
 
                 response = self.client.models.generate_content(
                     model=self.model,
@@ -245,6 +260,15 @@ class VideoScriptGenerator:
             except Exception as e:  # noqa: BLE001
                 last_error = e
                 msg = str(e)
+
+                # This model will not take thinkingBudget=0. Retry immediately
+                # without it — not a retry of a failed request so much as the same
+                # request with an argument this model happens to reject, so it does
+                # not spend a retry either.
+                if thinking_requested and "INVALID_ARGUMENT" in msg:
+                    self._thinking_off_supported = False
+                    print(f"{self.model} rejects thinking_budget=0; retrying with thinking enabled.")
+                    continue
 
                 # Daily quota gone on this key. Backoff cannot help — only another
                 # project's key can — so rotate before the transient check, which
@@ -303,6 +327,7 @@ class VideoScriptGenerator:
         duration: int = 60,
         key_points: Optional[List[str]] = None,
         words_per_second: float = 2.5,
+        use_web_context: bool = False,
     ) -> Dict:
         """
         Generate a video script based on the given topic, duration, and key points.
@@ -320,8 +345,12 @@ class VideoScriptGenerator:
         # roughly this many spoken words total — the strongest lever on length.
         target_words = max(12, int(round(duration * words_per_second)))
 
-        # Fetch web context for the topic
-        web_context = self._search_web(topic)
+        # Web context is off by default. The scraper targets a Google results
+        # markup that no longer exists, so it returns an empty string on every
+        # call — measured at 0 characters — while still costing a round trip to
+        # google.com on the pipeline's critical path. Set use_web_context=True if
+        # the scraper is ever repointed at a source that works.
+        web_context = self._search_web(topic) if use_web_context else ""
 
         # SINGLE Gemini call (draft + segmentation combined) to halve free-tier
         # quota usage. Produces the final timestamped audio + visual script directly.

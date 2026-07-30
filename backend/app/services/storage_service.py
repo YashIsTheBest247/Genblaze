@@ -29,6 +29,7 @@ import logging
 import mimetypes
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -209,18 +210,34 @@ class B2StorageService:
         if not self.available:
             return keys
 
-        keys["video"] = self.put_file(video_path, self.key_for(stem, VIDEO_OBJECT))
+        # The five artefact uploads are independent of each other and each one is
+        # almost entirely round-trip latency, so run them together. Serially this
+        # was the second-largest cost in the pipeline; concurrently it costs about
+        # as much as the single slowest upload (the video).
+        #
+        # meta.json is deliberately NOT in this batch — it is the completion
+        # marker, and writing it before the others land would let the library list
+        # a video whose captions or thumbnail are still uploading.
+        jobs = [("video", lambda: self.put_file(video_path, self.key_for(stem, VIDEO_OBJECT)))]
+        if thumbnail_path:
+            jobs.append(("thumbnail", lambda: self.put_file(thumbnail_path, self.key_for(stem, THUMB_OBJECT))))
+        if srt_path:
+            jobs.append(("srt", lambda: self.put_file(srt_path, self.key_for(stem, SRT_OBJECT))))
+        if script_path:
+            jobs.append(("script", lambda: self.put_file(script_path, self.key_for(stem, SCRIPT_OBJECT))))
+        if manifest:
+            jobs.append(("manifest", lambda: self.put_json(manifest, self.key_for(stem, MANIFEST_OBJECT))))
+
+        with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            futures = {name: pool.submit(job) for name, job in jobs}
+            for name, future in futures.items():
+                try:
+                    keys[name] = future.result()
+                except Exception as e:  # noqa: BLE001 - the video check below decides
+                    logger.warning("Upload of %s for %s failed: %s", name, stem, e)
+
         if keys["video"] is None:
             raise StorageError(f"Failed to upload video to B2 for {stem}")
-
-        if thumbnail_path:
-            keys["thumbnail"] = self.put_file(thumbnail_path, self.key_for(stem, THUMB_OBJECT))
-        if srt_path:
-            keys["srt"] = self.put_file(srt_path, self.key_for(stem, SRT_OBJECT))
-        if script_path:
-            keys["script"] = self.put_file(script_path, self.key_for(stem, SCRIPT_OBJECT))
-        if manifest:
-            keys["manifest"] = self.put_json(manifest, self.key_for(stem, MANIFEST_OBJECT))
 
         # meta.json is written last: its presence marks the render as complete.
         record = dict(meta or {})

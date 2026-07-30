@@ -75,6 +75,16 @@ backend/resources/audio/*
 backend/resources/video/*
 !backend/resources/video/.gitkeep
 backend/resources/scripts/script.json
+# Per-render outputs and runtime state, not source. These were accumulating in
+# commits alongside real changes.
+backend/resources/subtitles/*
+!backend/resources/subtitles/.gitkeep
+backend/resources/provenance/
+backend/resources/recent_photo_ids.json
+backend/resources/trends_state.json
+# MoviePy writes temp audio beside the working directory and leaves it behind when
+# a render is interrupted.
+*TEMP_MPY*
 # static/videos is NOT ignored: commit the videos (+ .jpg thumbnails) you want to
 # appear on the deployed site. They ship with the deploy and the Library lists them.
 backend/static/videos/*.log

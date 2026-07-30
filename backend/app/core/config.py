@@ -95,7 +95,10 @@ class Settings(BaseSettings):
 
     # Video generation settings
     DEFAULT_VIDEO_DURATION: int = Field(default=60, env="DEFAULT_VIDEO_DURATION")
-    DEFAULT_VIDEO_FPS: int = Field(default=24, env="DEFAULT_VIDEO_FPS")
+    # 20 rather than 24: encode time is linear in frame count, and the content is
+    # still photographs with crossfades — there is no motion for the extra 4 frames
+    # a second to resolve. Raise it if real video footage is ever mixed in.
+    DEFAULT_VIDEO_FPS: int = Field(default=20, env="DEFAULT_VIDEO_FPS")
     DEFAULT_CHUNK_SIZE: int = Field(default=10, env="DEFAULT_CHUNK_SIZE")
     # Intro/outro lengths (seconds). Kept short so the total video tracks the
     # user-selected duration instead of being dominated by bookends.
@@ -148,6 +151,13 @@ class Settings(BaseSettings):
     # Write the provenance manifest into the mp4 itself, so the file carries its
     # own generation record even after it leaves B2.
     GENBLAZE_EMBED_MANIFEST: bool = Field(default=True, env="GENBLAZE_EMBED_MANIFEST")
+    # Whether the provenance ingest ALSO pushes every artefact through its object
+    # storage sink. Off by default because it is pure duplication: the storage
+    # stage already uploads the mp4, thumbnail, captions, script and the manifest
+    # itself to B2, so sinking re-uploaded the same megabytes a second time and
+    # cost ~15s of every render. The manifest is still built, verified and
+    # embedded in the mp4 either way — only the duplicate copies are skipped.
+    GENBLAZE_SINK_ASSETS: bool = Field(default=False, env="GENBLAZE_SINK_ASSETS")
 
     # GMI Cloud — unlocks Genblaze cloud image/audio/video models. Optional:
     # without it Flux falls back to the Google provider + local Kokoro TTS.

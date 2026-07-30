@@ -497,16 +497,25 @@ class GenblazeService:
             if extra:
                 source_metadata.update(extra)
 
+            # The storage stage uploads the mp4, thumbnail, captions, script and
+            # this manifest to B2 already. Handing the same artefacts to the sink
+            # re-uploads every byte a second time, which was the single largest
+            # cost in the pipeline. Withhold it and persist the run record locally
+            # instead; the manifest is identical either way.
+            ingest_sink = self.sink if settings.GENBLAZE_SINK_ASSETS else None
+
             result = Pipeline.ingest(
                 assets,
                 source="flux-render-pipeline",
                 source_metadata=source_metadata,
-                sink=self.sink,
+                sink=ingest_sink,
                 name="flux-render",
                 tenant_id=settings.GENBLAZE_TENANT_ID,
             )
             manifest = json.loads(result.manifest.model_dump_json())
             manifest["_verified"] = bool(result.manifest.verify())
+            if ingest_sink is None:
+                self._write_run_manifest(result.run, manifest)
             logger.info(
                 "Provenance manifest %s recorded (%d assets, hash %s)",
                 result.run.run_id, len(assets), manifest.get("canonical_hash", "")[:12],
@@ -520,6 +529,26 @@ class GenblazeService:
                 import shutil as _shutil
 
                 _shutil.rmtree(staging, ignore_errors=True)
+
+    def _write_run_manifest(self, run: Any, manifest: Dict[str, Any]) -> None:
+        """
+        Keep the run record on disk when the ingest sink is withheld.
+
+        With a sink, Genblaze persists the run alongside the uploaded assets.
+        Without one nothing would record that the run happened, so write it here.
+        Best-effort: losing this file must never fail a render, since the same
+        manifest also goes to B2 with the video and is embedded in the mp4.
+        """
+        try:
+            run_id = getattr(run, "run_id", None) or "unknown"
+            out_dir = settings.RESOURCE_DIR / "provenance"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / f"{run_id}.json").write_text(
+                json.dumps({"run_id": run_id, "manifest": manifest}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not write local run manifest: %s", e)
 
     def embed_manifest(self, video_path: Path, manifest: Dict[str, Any]) -> bool:
         """

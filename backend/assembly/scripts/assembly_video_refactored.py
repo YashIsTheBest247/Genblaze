@@ -396,8 +396,16 @@ def create_video(
     outro_clip = create_intro_clip(intro_image_path, duration=outro_duration, topic=outro_text, font_path=font_path)
     raw_clips.append(outro_clip)
     
-    # Concatenate all clips
-    video = concatenate_videoclips(raw_clips, method="compose")
+    # Concatenate all clips.
+    #
+    # "chain" rather than "compose": every clip here is already exactly
+    # TARGET_W x TARGET_H (fit_to_frame covers-and-crops the scenes; the intro and
+    # outro are composited at that size), and compose pays for a full
+    # CompositeVideoClip layer on every frame to composite a single clip onto a
+    # background that is never visible. Chain just plays them back to back. The
+    # subtitle overlay below still needs a real composite — this only removes the
+    # redundant inner one.
+    video = concatenate_videoclips(raw_clips, method="chain")
     
     # Add subtitles if requested
     if with_subtitles:
