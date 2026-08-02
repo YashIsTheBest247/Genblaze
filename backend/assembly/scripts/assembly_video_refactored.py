@@ -8,7 +8,8 @@ import json
 import shutil
 from pathlib import Path
 from typing import List, Optional
-from moviepy import ImageClip, concatenate_videoclips, AudioFileClip, TextClip, CompositeVideoClip, vfx
+from moviepy import (ImageClip, VideoFileClip, concatenate_videoclips, AudioFileClip,
+                     TextClip, CompositeVideoClip, vfx)
 import pysrt
 from PIL import Image, ImageDraw, ImageFont
 
@@ -61,6 +62,35 @@ def make_subtitle_clip(text: str, font_path):
         margin=(SUBTITLE_PAD_X, SUBTITLE_PAD_Y),
         interline=SUBTITLE_INTERLINE,
     )
+
+
+def build_scene_clip(path: Path, duration: float):
+    """
+    Turn one scene asset into a clip of exactly `duration`.
+
+    Stills become a held frame. Video clips are trimmed when they are longer
+    than the narration and LOOPED when shorter — stock clips run 5-20s while a
+    narration segment can run longer, and a clip that simply ended would leave
+    the frame frozen or black for the remainder. Their own audio is dropped:
+    the narration is the only sound track.
+
+    Falls back to a still frame if the video cannot be opened, so one unplayable
+    download cannot take down the render.
+    """
+    if path.suffix.lower() == ".mp4":
+        try:
+            clip = VideoFileClip(str(path), audio=False)
+            if clip.duration >= duration:
+                return clip.subclipped(0, duration)
+            return clip.with_effects([vfx.Loop(duration=duration)])
+        except Exception as e:  # noqa: BLE001 - a still is better than no scene
+            print(f"Could not open scene video {path.name} ({e}); using a frame instead.")
+            try:
+                return VideoFileClip(str(path), audio=False).to_ImageClip(0).with_duration(duration)
+            except Exception:  # noqa: BLE001
+                # create_placeholder_image writes a file and returns its path.
+                return ImageClip(str(create_placeholder_image(text="Scene unavailable"))).with_duration(duration)
+    return ImageClip(str(path)).with_duration(duration)
 
 
 def fit_to_frame(clip, target_w: int = TARGET_W, target_h: int = TARGET_H):
@@ -368,7 +398,10 @@ def create_video(
         images = [placeholder_image] * len(audio_files)
     else:
         check_folder_exists(image_folder)
-        images = get_files(image_folder, ('.jpg', '.png', '.jpeg'))
+        # .mp4 too: a scene is a short stock video clip whenever one was
+        # genuinely on topic, and a still otherwise. Both kinds sort together
+        # by scene number, so the ordering is unaffected.
+        images = get_files(image_folder, ('.jpg', '.png', '.jpeg', '.mp4'))
     
     # Extract subtitles from script
     subtitles = json_extract(script_path)
@@ -383,13 +416,13 @@ def create_video(
     # Create video clips with audio
     for img, audio in zip(images, audio_files):
         audio_clip = AudioFileClip(str(audio))
-        image_clip = ImageClip(str(img)).with_duration(audio_clip.duration)
-        # Fit each scene image to the vertical 9:16 frame (cover + center-crop)
-        image_clip = fit_to_frame(image_clip).with_audio(audio_clip)
+        scene_clip = build_scene_clip(Path(img), audio_clip.duration)
+        # Fit each scene to the vertical 9:16 frame (cover + center-crop)
+        scene_clip = fit_to_frame(scene_clip).with_audio(audio_clip)
         audio_durations.append(audio_clip.duration)
         print(f"Video Clip no. {len(raw_clips)} successfully created")
-        image_clip = add_effects(image_clip)
-        raw_clips.append(image_clip)
+        scene_clip = add_effects(scene_clip)
+        raw_clips.append(scene_clip)
     
     # Create outro clip
     outro_text = "MADE BY TEAM FLUX"

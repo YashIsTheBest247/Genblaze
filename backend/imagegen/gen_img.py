@@ -65,25 +65,360 @@ def _trim_query(query: str) -> str:
     return " ".join((meaningful or words)[:3])
 
 
-def _relevance(query: str, photo: dict) -> int:
-    """
-    How many meaningful words of the query the photo's own description echoes.
-
-    Pexels never returns nothing — it returns its loosest match and says nothing
-    about how loose it was. Its alt text is written per photo and describes the
-    actual subject, so overlapping content words are a cheap, honest signal of
-    whether a result is on topic at all.
-    """
-    haystack = f"{photo.get('alt') or ''} {photo.get('photographer') or ''}".lower()
-    if not haystack.strip():
-        # No description to judge by. Treat as a weak match rather than a
-        # disqualification, so photos without alt text stay usable.
-        return 1
-    terms = {
+def _query_terms(query: str) -> set:
+    return {
         w.lower() for w in re.findall(r"[A-Za-z']+", query)
         if len(w) > 2 and w.lower() not in _UNSEARCHABLE
     }
-    return sum(1 for t in terms if t in haystack)
+
+
+def _relevance(query: str, candidate: dict) -> int:
+    """
+    How many meaningful words of the query the photo's own description echoes.
+
+    Neither stock API ever returns nothing — each returns its loosest match and
+    says nothing about how loose it was, which is how "Indian rupee banknotes"
+    ended up as Turkish lira. Both attach a human-written description to every
+    photo, so overlapping content words are a cheap, honest signal of whether a
+    result is on topic at all, and a directly comparable one across providers.
+    """
+    haystack = (candidate.get("text") or "").lower()
+    if not haystack.strip():
+        # No description to judge by. Treat as a weak match rather than a
+        # disqualification, so photos without a caption stay usable.
+        return 1
+    return sum(1 for t in _query_terms(query) if t in haystack)
+
+
+def _pexels_candidates(query: str, api_key: str, orientation: str) -> List[dict]:
+    """Pexels results, normalised to the shared candidate shape."""
+    if not api_key:
+        return []
+    try:
+        r = requests.get(
+            "https://api.pexels.com/v1/search",
+            headers={"Authorization": api_key},
+            params={"query": query, "per_page": 8, "orientation": orientation},
+            timeout=30,
+        )
+        r.raise_for_status()
+        out = []
+        for p in r.json().get("photos", []):
+            url = p["src"].get("large2x") or p["src"].get("large")
+            if url:
+                out.append({
+                    "id": f"pexels:{p.get('id')}",
+                    "url": url,
+                    "text": p.get("alt") or "",
+                    "source": "pexels",
+                })
+        return out
+    except Exception as e:  # noqa: BLE001 - the other provider may still deliver
+        print(f"Pexels lookup failed for '{query}': {e}")
+        return []
+
+
+def _unsplash_candidates(query: str, api_key: str, orientation: str) -> List[dict]:
+    """
+    Unsplash results, normalised to the shared candidate shape.
+
+    A second library matters more for relevance than for volume: the two have
+    very different coverage, and a query that only Pexels answers with filler is
+    often answered properly by Unsplash (and the reverse). Scoring both pools
+    against the query and taking the better match is what keeps scenes on topic.
+    """
+    if not api_key:
+        return []
+    try:
+        r = requests.get(
+            "https://api.unsplash.com/search/photos",
+            headers={"Authorization": f"Client-ID {api_key}",
+                     "Accept-Version": "v1"},
+            params={"query": query, "per_page": 8, "orientation": orientation,
+                    "content_filter": "high"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        out = []
+        for p in r.json().get("results", []):
+            url = (p.get("urls") or {}).get("regular") or (p.get("urls") or {}).get("full")
+            if not url:
+                continue
+            # Unsplash splits its caption across two optional fields and also
+            # exposes the tags it indexed the photo under; all three describe the
+            # subject, so all three feed the relevance score.
+            tags = " ".join(t.get("title", "") for t in (p.get("tags") or []))
+            out.append({
+                "id": f"unsplash:{p.get('id')}",
+                "url": url,
+                "text": " ".join(filter(None, [
+                    p.get("alt_description"), p.get("description"), tags,
+                ])),
+                "source": "unsplash",
+            })
+        return out
+    except Exception as e:  # noqa: BLE001
+        print(f"Unsplash lookup failed for '{query}': {e}")
+        return []
+
+
+# Unsplash uses different orientation words than Pexels for the same shapes.
+_UNSPLASH_ORIENTATION = {"portrait": "portrait", "landscape": "landscape", "square": "squarish"}
+
+
+def _with_shorter_query(fetch, query: str, trimmed: str, api_key: str, orientation: str) -> List[dict]:
+    """
+    Run one provider's search, retrying with the trimmed query if it draws a blank.
+
+    The two libraries have very different tolerance for long phrases. Unsplash
+    requires every term to match, so a six-word scene prompt returned ZERO
+    results from it every time while Pexels answered the same prompt with eight
+    — which meant Unsplash was never actually contributing to the ranking. The
+    per-provider retry gives each library a query it can answer, so the
+    relevance comparison is between two real pools rather than one.
+    """
+    if not api_key:
+        return []
+    results = fetch(query, api_key, orientation)
+    if not results and trimmed and trimmed != query:
+        results = fetch(trimmed, api_key, orientation)
+    return results
+
+
+def _identifying_terms(query: str) -> List[str]:
+    """
+    The words that decide whether a shot is the right one.
+
+    Capitalised tokens in a scene prompt are the proper nouns the script chose to
+    pin the shot down — "Bombay", "Bengaluru", "Tata", "Sensex" — plus the head
+    noun the prompt opens with. Drop one of those and the footage can be of the
+    right *kind* of thing in entirely the wrong place.
+    """
+    words = re.findall(r"[A-Za-z']+", query)
+    return [
+        w.lower() for w in words
+        if len(w) > 2 and w[0].isupper() and w.lower() not in _UNSEARCHABLE
+    ]
+
+
+def _term_in(term: str, words: List[str]) -> bool:
+    """
+    Whether `term` appears in `words`, allowing for inflection.
+
+    A literal comparison rejected "interactive trading desk" for the term
+    "trader" and "india note" for "indian" — the same subject under a different
+    ending. Matching on a shared four-character stem recovers those without
+    loosening the check where it matters: no stem of "bombay" reaches "new york".
+    """
+    for w in words:
+        if w == term:
+            return True
+        if min(len(w), len(term)) >= 5:
+            common = 0
+            for a, b in zip(w, term):
+                if a != b:
+                    break
+                common += 1
+            if common >= 4:
+                return True
+    return False
+
+
+def _slug_text(page_url: str) -> str:
+    """
+    The descriptive words out of a Pexels video page URL.
+
+    Video results carry no caption and an empty `tags` array, but the page slug
+    is written from the subject — ".../video/a-person-tossing-money-4836695/".
+    Without it there would be no way to tell an on-topic clip from a loose one,
+    and Pexels video is as loose as Pexels photo: "indian rupee banknotes"
+    returns Philippine peso footage.
+    """
+    if not page_url:
+        return ""
+    slug = page_url.rstrip("/").rsplit("/", 1)[-1]
+    return " ".join(w for w in slug.split("-") if not w.isdigit())
+
+
+def _pexels_video_candidates(
+    query: str,
+    api_key: str,
+    orientation: str,
+    min_height: int = 854,
+) -> List[dict]:
+    """Pexels video results, normalised to the shared candidate shape."""
+    if not api_key:
+        return []
+    try:
+        r = requests.get(
+            "https://api.pexels.com/videos/search",
+            headers={"Authorization": api_key},
+            params={"query": query, "per_page": 8, "orientation": orientation,
+                    "size": "small"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        out = []
+        for v in r.json().get("videos", []):
+            files = [f for f in v.get("video_files", [])
+                     if f.get("file_type") == "video/mp4" and f.get("link")]
+            if not files:
+                continue
+            # Smallest rendition that still covers the output frame. The source
+            # masters are 4K; downloading one per scene would dominate both the
+            # render time and the memory ceiling for no visible gain at 480x854.
+            files.sort(key=lambda f: f.get("height") or 0)
+            chosen = next((f for f in files if (f.get("height") or 0) >= min_height), files[-1])
+            out.append({
+                "id": f"pexels-video:{v.get('id')}",
+                "url": chosen["link"],
+                "text": _slug_text(v.get("url") or ""),
+                "source": "pexels-video",
+                "duration": v.get("duration") or 0,
+            })
+        return out
+    except Exception as e:  # noqa: BLE001 - stills are the fallback
+        print(f"Pexels video lookup failed for '{query}': {e}")
+        return []
+
+
+def search_stock_video(
+    query: str,
+    pexels_api_key: str = "",
+    aspect_ratio: str = "9:16",
+    exclude_ids: Optional[set] = None,
+    min_height: int = 854,
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """
+    Find an on-topic stock video clip for `query` and return (bytes, clip_id).
+
+    Deliberately stricter than the photo search: a clip is used ONLY when its
+    own slug echoes the query. Video results have no caption to fall back on and
+    the library is far smaller than the photo one, so an unranked "best video
+    match" is much more likely to be unrelated footage than an unranked photo
+    is. When nothing scores, this returns nothing and the caller uses a still —
+    a correct photograph beats moving footage of the wrong subject.
+    """
+    if not pexels_api_key:
+        return None, None
+
+    used = exclude_ids or set()
+    orientation = _orientation_for(aspect_ratio)
+    trimmed = _trim_query(query)
+
+    candidates = _with_shorter_query(
+        lambda q, k, o: _pexels_video_candidates(q, k, o, min_height),
+        query, trimmed, pexels_api_key, orientation,
+    )
+    # Every identifying word of the prompt must appear in the clip's slug — not
+    # merely some overlap. A "some overlap" rule accepted footage of the NEW YORK
+    # Stock Exchange, US and UK flags flying, for the prompt "Bombay Stock
+    # Exchange building exterior": it matched "stock exchange building" and lost
+    # the only word that made the shot right or wrong. The video library is a
+    # fraction of the size of the photo one, so a loose match there is far more
+    # likely to be the wrong country entirely.
+    required = _identifying_terms(query)
+    pool = []
+    for c in candidates:
+        if c["id"] in used:
+            continue
+        slug_words = re.findall(r"[a-z']+", (c.get("text") or "").lower())
+        missing = [t for t in required if not _term_in(t, slug_words)]
+        if missing:
+            print(f"  skipped clip {c['text'][:44]!r}: missing {missing}")
+            continue
+        pool.append(c)
+
+    scored = [(max(_relevance(query, c), _relevance(trimmed, c)), c) for c in pool]
+    if not scored:
+        return None, None
+
+    scored.sort(key=lambda pair: -pair[0])
+    for score, cand in scored:
+        try:
+            r = requests.get(cand["url"], timeout=60)
+            r.raise_for_status()
+            print(f"  pexels-video match ({score}): {cand['text'][:60]!r} [{cand['duration']}s]")
+            return r.content, cand["id"]
+        except Exception as e:  # noqa: BLE001 - try the next clip
+            print(f"Pexels video download failed ({cand['id']}): {e}")
+    return None, None
+
+
+def search_stock_image(
+    query: str,
+    pexels_api_key: str = "",
+    unsplash_api_key: str = "",
+    aspect_ratio: str = "9:16",
+    exclude_ids: Optional[set] = None,
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """
+    Find the most on-topic stock photo for `query` and return (bytes, photo_id).
+
+    Searches Pexels and Unsplash together and ranks the combined pool by
+    relevance rather than trusting either provider's own ordering — both return
+    their loosest match rather than nothing, so "best result from one library"
+    is a much weaker guarantee than "best result across two, scored against the
+    query". Providers are queried concurrently, so a second library costs
+    latency only when one of them is slow.
+
+    Asks for several candidates per provider so that a photo already used by
+    another scene can be skipped (with one candidate, two similar prompts
+    returned the same photo and it appeared twice in one video) and a failed
+    download falls through instead of dropping the scene to generation.
+
+    Retries once with a trimmed query when nothing on-topic comes back.
+
+    Returns:
+        (image bytes, photo id), or (None, None) if nothing usable was found.
+        The id is namespaced by provider, since the two number their photos
+        independently and a bare integer would collide across them.
+    """
+    if not pexels_api_key and not unsplash_api_key:
+        return None, None
+
+    used = exclude_ids or set()
+    orientation = _orientation_for(aspect_ratio)
+    trimmed = _trim_query(query)
+
+    for attempt_query in (query, trimmed):
+        if not attempt_query:
+            continue
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(_with_shorter_query, _pexels_candidates, attempt_query,
+                            trimmed, pexels_api_key, orientation),
+                pool.submit(_with_shorter_query, _unsplash_candidates, attempt_query,
+                            trimmed, unsplash_api_key,
+                            _UNSPLASH_ORIENTATION.get(orientation, "portrait")),
+            ]
+            candidates = [c for f in futures for c in f.result()]
+
+        if not candidates:
+            continue
+
+        # Prefer unused photos; fall back to the whole pool if every candidate is
+        # taken, since a repeat beats an empty scene.
+        pool_ = [c for c in candidates if c["id"] not in used] or candidates
+        pool_.sort(key=lambda c: -_relevance(attempt_query, c))
+        relevant = [c for c in pool_ if _relevance(attempt_query, c) > 0]
+        if not relevant and attempt_query != trimmed:
+            # Neither library has anything matching this phrasing. A shorter
+            # query usually has a far better pool, so try that before settling
+            # for a photo that has nothing to do with the story.
+            continue
+
+        for cand in (relevant or pool_):
+            try:
+                r = requests.get(cand["url"], timeout=30)
+                r.raise_for_status()
+                print(f"  {cand['source']} match ({_relevance(attempt_query, cand)}): {cand['text'][:60]!r}")
+                return r.content, cand["id"]
+            except Exception as e:  # noqa: BLE001 - try the next candidate
+                print(f"{cand['source']} download failed ({cand['id']}): {e}")
+
+    return None, None
 
 
 def search_pexels_image(
@@ -91,81 +426,11 @@ def search_pexels_image(
     api_key: str,
     aspect_ratio: str = "1:1",
     exclude_ids: Optional[set] = None,
-) -> Tuple[Optional[bytes], Optional[int]]:
-    """
-    Search Pexels for a stock photo and return (bytes, photo_id).
-
-    Asks for several candidates rather than one so that:
-      * a photo already used elsewhere in this video can be skipped — with
-        per_page=1 two similar prompts returned the identical image, and the same
-        frame appeared twice in one short;
-      * a failed download falls through to the next candidate instead of the
-        whole scene dropping to the (quota-limited) generation fallback.
-
-    Retries once with a trimmed query when the full phrase matches nothing.
-
-    Args:
-        query: Search query (the scene prompt)
-        api_key: Pexels API key
-        aspect_ratio: Desired aspect ratio (mapped to Pexels orientation)
-        exclude_ids: photo ids already used by other scenes
-
-    Returns:
-        (image bytes, photo id), or (None, None) if nothing usable was found
-    """
-    if not api_key:
-        return None, None
-
-    used = exclude_ids or set()
-    for attempt_query in (query, _trim_query(query)):
-        if not attempt_query:
-            continue
-        try:
-            response = requests.get(
-                "https://api.pexels.com/v1/search",
-                headers={"Authorization": api_key},
-                params={
-                    "query": attempt_query,
-                    "per_page": 8,
-                    "orientation": _orientation_for(aspect_ratio),
-                },
-                timeout=30,
-            )
-            response.raise_for_status()
-            photos = response.json().get("photos", [])
-            if not photos:
-                continue
-
-            # Prefer an unused photo; fall back to the top hit if every candidate
-            # is taken, since a repeat beats an empty scene.
-            ordered = [p for p in photos if p.get("id") not in used] or photos[:1]
-            # Then prefer the ones that are actually ON TOPIC. Pexels always
-            # returns something, and its ranking degrades quietly: "Indian rupee
-            # banknotes close up" returned Turkish lira and Indian flags. Ranking
-            # by how much of the query the photo's own description echoes puts the
-            # real match first, and the relevant flag below decides whether an
-            # unrelated result is worth using at all.
-            ordered = sorted(ordered, key=lambda p: -_relevance(attempt_query, p))
-            relevant = [p for p in ordered if _relevance(attempt_query, p) > 0]
-            if not relevant and attempt_query != _trim_query(query):
-                # Nothing here matches. A shorter query usually has a much better
-                # pool, so try that before settling for an unrelated photo.
-                continue
-            for photo in (relevant or ordered):
-                image_url = photo["src"].get("large2x") or photo["src"].get("large")
-                if not image_url:
-                    continue
-                try:
-                    img_response = requests.get(image_url, timeout=30)
-                    img_response.raise_for_status()
-                    return img_response.content, photo.get("id")
-                except Exception as e:  # noqa: BLE001 - try the next candidate
-                    print(f"Pexels download failed ({photo.get('id')}): {e}")
-
-        except Exception as e:  # noqa: BLE001
-            print(f"Pexels lookup failed for '{attempt_query}': {e}")
-
-    return None, None
+) -> Tuple[Optional[bytes], Optional[str]]:
+    """Pexels-only search. Kept for callers that pin a single provider."""
+    return search_stock_image(
+        query, pexels_api_key=api_key, aspect_ratio=aspect_ratio, exclude_ids=exclude_ids
+    )
 
 
 def generate_gemini_image(
@@ -210,13 +475,14 @@ def get_image_for_prompt(
     prompt: str,
     pexels_api_key: str,
     gemini_api_key: str,
-    aspect_ratio: str = "1:1",
+    aspect_ratio: str = "9:16",
+    unsplash_api_key: str = "",
     gemini_model: str = "gemini-2.5-flash-image",
     used_ids: Optional[set] = None,
     used_lock: Optional[threading.Lock] = None,
 ) -> Optional[bytes]:
     """
-    Get an image for a prompt: try Pexels first, fall back to Gemini.
+    Get an image for a prompt: search the stock libraries, fall back to Gemini.
 
     `used_ids` is shared across the scene thread pool so no two scenes in the same
     video land on the same stock photo. It is claimed under `used_lock` before the
@@ -231,17 +497,16 @@ def get_image_for_prompt(
         with used_lock:
             snapshot = set(used_ids)
 
-    image_bytes, photo_id = search_pexels_image(
-        prompt, pexels_api_key, aspect_ratio, exclude_ids=snapshot
+    image_bytes, photo_id = search_stock_image(
+        prompt, pexels_api_key, unsplash_api_key, aspect_ratio, exclude_ids=snapshot
     )
     if image_bytes:
         if used_ids is not None and used_lock is not None and photo_id is not None:
             with used_lock:
                 used_ids.add(photo_id)
-        print(f"Pexels match found for: {prompt}")
         return image_bytes
 
-    print(f"No Pexels match for '{prompt}', falling back to Gemini...")
+    print(f"No stock match for '{prompt}', falling back to Gemini...")
     return generate_gemini_image(prompt, gemini_api_key, gemini_model)
 
 
@@ -263,8 +528,11 @@ def main_generate_images(
     images_output_path: Path,
     gemini_api_key: str,
     pexels_api_key: str = "",
+    unsplash_api_key: str = "",
     gemini_model: str = "gemini-2.5-flash-image",
-    aspect_ratio: str = "1:1",
+    aspect_ratio: str = "9:16",
+    video_clips: bool = False,
+    video_min_height: int = 854,
     image_provider: str = "auto",
     genblaze_generator: Optional[Callable[[List[str], List[Path], str], Sequence[Optional[Path]]]] = None,
     source_log: Optional[dict] = None,
@@ -277,13 +545,25 @@ def main_generate_images(
         images_output_path: Directory where images should be saved
         gemini_api_key: Gemini API key (direct fallback image generation)
         pexels_api_key: Pexels API key (stock image source)
+        unsplash_api_key: Unsplash access key (second stock source; optional).
+            When set, both libraries are searched and the more on-topic result
+            wins — a query one library only answers with filler is often
+            answered properly by the other.
         gemini_model: Gemini image model used on fallback
         aspect_ratio: Desired image aspect ratio
-        image_provider: "auto" (pexels -> gemini, the default flow), "genblaze"
-            (genblaze -> pexels -> gemini), or a pinned source ("pexels", "gemini")
+        image_provider: "auto" (stock -> gemini, the default flow), "genblaze"
+            (genblaze -> stock -> gemini), or a pinned source ("pexels",
+            "unsplash", "gemini")
         genblaze_generator: callable(prompts, out_paths, aspect_ratio) returning
             a path per prompt (None where that scene failed). Supplied by the
             video service so this module stays free of app imports.
+        video_clips: when True, each scene first tries for a short stock VIDEO
+            clip and only falls back to a still when no clip is genuinely on
+            topic. Motion holds attention far better than a static frame, but a
+            correct photograph still beats footage of the wrong subject.
+        video_min_height: smallest clip rendition to accept, in pixels. The
+            source masters are 4K; capping this keeps render time and peak
+            memory near the still-image baseline.
         source_log: optional dict mutated with which source served each scene —
             the render's provenance record reads this back.
 
@@ -353,8 +633,9 @@ def main_generate_images(
 
     def _source_one(idx: int) -> bool:
         target = targets[idx]
-        if target.exists() and target.stat().st_size > 0:
-            return True  # already produced by Genblaze
+        for produced in (target, target.with_suffix(".mp4")):
+            if produced.exists() and produced.stat().st_size > 0:
+                return True  # already produced by an earlier pass
 
         prompt = prompts[idx]
         if not prompt:
@@ -362,21 +643,45 @@ def main_generate_images(
             return False
 
         try:
-            print(f"Sourcing image for prompt: {prompt}")
+            print(f"Sourcing visual for prompt: {prompt}")
             image_bytes = None
             used = None
 
-            # Pexels first (primary source), then Gemini generation as the
-            # fallback. "genblaze" mode reaches here only for scenes Genblaze
-            # could not produce, so it gets the same two-step safety net.
-            if provider in ("auto", "genblaze", "pexels"):
+            # Motion first, when it is genuinely about the story. search_stock_video
+            # returns nothing rather than something loose, so this silently
+            # degrades to the still search on every scene it cannot serve.
+            if video_clips and provider in ("auto", "genblaze", "pexels"):
                 with used_lock:
                     snapshot = set(used_photo_ids)
-                image_bytes, photo_id = search_pexels_image(
-                    prompt, pexels_api_key, aspect_ratio, exclude_ids=snapshot
+                clip_bytes, clip_id = search_stock_video(
+                    prompt, pexels_api_key, aspect_ratio,
+                    exclude_ids=snapshot, min_height=video_min_height,
+                )
+                if clip_bytes:
+                    clip_target = target.with_suffix(".mp4")
+                    if save_image(clip_bytes, clip_target):
+                        with used_lock:
+                            used_photo_ids.add(clip_id)
+                        sources[str(idx)] = "pexels-video"
+                        return True
+
+            # Stock photography first (primary source), then Gemini generation
+            # as the fallback. "genblaze" mode reaches here only for scenes
+            # Genblaze could not produce, so it gets the same safety net.
+            if provider in ("auto", "genblaze", "pexels", "unsplash"):
+                with used_lock:
+                    snapshot = set(used_photo_ids)
+                image_bytes, photo_id = search_stock_image(
+                    prompt,
+                    pexels_api_key="" if provider == "unsplash" else pexels_api_key,
+                    unsplash_api_key="" if provider == "pexels" else unsplash_api_key,
+                    aspect_ratio=aspect_ratio,
+                    exclude_ids=snapshot,
                 )
                 if image_bytes:
-                    used = "pexels"
+                    # Report the library that actually served the scene, not the
+                    # configured preference — the provenance manifest reads this.
+                    used = photo_id.split(":", 1)[0] if photo_id else "stock"
                     if photo_id is not None:
                         with used_lock:
                             used_photo_ids.add(photo_id)

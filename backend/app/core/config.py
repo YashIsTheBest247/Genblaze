@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # Pexels API key - primary source for scene images (optional; falls back to Gemini)
     PEXELS_API_KEY: str = Field(default="", env="PEXELS_API_KEY")
 
+    # Unsplash access key - second stock library, searched alongside Pexels.
+    # Optional: without it the pipeline is Pexels-only, exactly as before. With
+    # it, both libraries are queried concurrently and the result that best
+    # matches the scene prompt wins, which is the main defence against the
+    # loosely-related filler a single library returns when it has no real match.
+    UNSPLASH_ACCESS_KEY: str = Field(default="", env="UNSPLASH_ACCESS_KEY")
+
     # Gemini text generation model
     GEMINI_TEXT_MODEL: str = Field(default="gemini-2.5-flash", env="GEMINI_TEXT_MODEL")
 
@@ -112,6 +119,16 @@ class Settings(BaseSettings):
     # Shape of the scene images to search for / generate. Defaults to the vertical
     # frame the video is actually assembled in.
     IMAGE_ASPECT_RATIO: str = Field(default="9:16", env="IMAGE_ASPECT_RATIO")
+
+    # Use short stock VIDEO clips for scenes instead of still photographs, where
+    # a clip is genuinely about the story. Motion holds attention far better on
+    # a vertical feed. Only used when the clip's own slug matches the scene
+    # prompt, so an off-topic clip never displaces a correct photo.
+    SCENE_VIDEO_CLIPS: bool = Field(default=True, env="SCENE_VIDEO_CLIPS")
+    # Smallest clip rendition to download. Pexels masters are 4K; anything above
+    # the output frame is decoded and thrown away, costing render time and the
+    # peak memory that OOM-killed the container once already.
+    SCENE_VIDEO_MIN_HEIGHT: int = Field(default=854, env="SCENE_VIDEO_MIN_HEIGHT")
 
     @property
     def image_aspect_ratio_effective(self) -> str:
@@ -267,13 +284,38 @@ class Settings(BaseSettings):
         ),
         env="TRENDS_FEED_URLS",
     )
+    # Fixed times of day to publish, rather than "every N hours from whenever the
+    # process happened to start". An interval anchored to boot never came due on
+    # a host that redeploys, and even when it did the slots drifted daily.
+    # Comma-separated 24-hour local times, interpreted in TRENDS_TIMEZONE.
+    TRENDS_SCHEDULE_HOURS: str = Field(default="8,14,20", env="TRENDS_SCHEDULE_HOURS")
+    TRENDS_TIMEZONE: str = Field(default="Asia/Kolkata", env="TRENDS_TIMEZONE")
+    # Kept for the status API and as the catch-up window: a run is considered
+    # missed if the last one predates the most recent slot that has passed.
     TRENDS_INTERVAL_HOURS: float = Field(default=6.0, env="TRENDS_INTERVAL_HOURS")
-    TRENDS_TOP_N: int = Field(default=3, env="TRENDS_TOP_N")
+    # Videos per scheduled slot. 1 x 3 slots = 3 videos a day.
+    TRENDS_TOP_N: int = Field(default=1, env="TRENDS_TOP_N")
     TRENDS_VIDEO_DURATION: int = Field(default=60, env="TRENDS_VIDEO_DURATION")
     TRENDS_MAX_AGE_HOURS: float = Field(default=24.0, env="TRENDS_MAX_AGE_HOURS")
     TRENDS_AUTO_PUBLISH: bool = Field(default=False, env="TRENDS_AUTO_PUBLISH")
     TRENDS_RUN_ON_STARTUP: bool = Field(default=False, env="TRENDS_RUN_ON_STARTUP")
     TRENDS_STATE_FILE: Optional[Path] = Field(default=None)
+
+    @property
+    def trends_schedule_hours(self) -> List[int]:
+        """Scheduled publish hours, parsed and ordered; bad entries are dropped."""
+        hours: List[int] = []
+        for part in (self.TRENDS_SCHEDULE_HOURS or "").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                hour = int(part)
+            except ValueError:
+                continue
+            if 0 <= hour <= 23 and hour not in hours:
+                hours.append(hour)
+        return sorted(hours) or [8, 14, 20]
 
     @property
     def trends_feed_urls_list(self) -> List[str]:

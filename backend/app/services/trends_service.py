@@ -18,7 +18,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import feedparser
 
@@ -200,30 +200,85 @@ def get_trending(
     return ranked
 
 
-# --- Dedup state -----------------------------------------------------------
+# --- Scheduler + dedup state -----------------------------------------------
+#
+# Held in B2 as well as on local disk. The hosted filesystem is ephemeral, so a
+# local-only record is erased by every redeploy — which both re-generated
+# articles that had already been published and, worse, reset the scheduler's
+# interval so the job never came due. B2 is the durable copy; the local file is
+# the fast path and the fallback when B2 is not configured.
+
+STATE_OBJECT_KEY = "flux/state/trends.json"
+
+
+def _read_state() -> Dict[str, Any]:
+    from app.services.storage_service import storage
+
+    remote: Dict[str, Any] = {}
+    try:
+        if storage.available:
+            remote = storage.read_json(STATE_OBJECT_KEY) or {}
+    except Exception as exc:  # noqa: BLE001 - fall back to the local copy
+        logger.warning(f"Could not read trends state from B2: {exc}")
+
+    local: Dict[str, Any] = {}
+    state_file = settings.TRENDS_STATE_FILE
+    if state_file and state_file.exists():
+        try:
+            local = json.loads(state_file.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Could not read trends state file: {exc}")
+
+    # Whichever ran more recently wins; a fresh container has no local file at
+    # all, so this is normally just the B2 copy.
+    if float(remote.get("last_run_at") or 0) >= float(local.get("last_run_at") or 0):
+        return remote or local
+    return local
+
+
+def _write_state(state: Dict[str, Any]) -> None:
+    state_file = settings.TRENDS_STATE_FILE
+    if state_file:
+        try:
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Could not write trends state file: {exc}")
+
+    from app.services.storage_service import storage
+
+    try:
+        if storage.available:
+            storage.put_json(state, STATE_OBJECT_KEY)
+    except Exception as exc:  # noqa: BLE001 - never fail a run over bookkeeping
+        logger.warning(f"Could not persist trends state to B2: {exc}")
+
 
 def load_processed_links() -> set:
-    state_file = settings.TRENDS_STATE_FILE
-    if not state_file or not state_file.exists():
-        return set()
+    return set(_read_state().get("processed", []))
+
+
+def last_run_at() -> Optional[float]:
+    """Epoch seconds of the last completed pipeline run, or None if never."""
+    value = _read_state().get("last_run_at")
     try:
-        data = json.loads(state_file.read_text(encoding="utf-8"))
-        return set(data.get("processed", []))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(f"Could not read trends state file: {exc}")
-        return set()
+        return float(value) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+def record_run(when: Optional[float] = None) -> None:
+    """Stamp a completed run so a restart cannot reset the schedule."""
+    state = _read_state()
+    state["last_run_at"] = when if when is not None else time.time()
+    _write_state(state)
 
 
 def mark_processed(links: List[str], keep_last: int = 500) -> None:
     """Record links as processed so they're never regenerated (bounded history)."""
-    state_file = settings.TRENDS_STATE_FILE
-    if not state_file:
-        return
-    existing = list(load_processed_links())
+    state = _read_state()
+    existing = list(state.get("processed", []))
     # Preserve order roughly: old first, then newly added; trim to keep_last.
     combined = existing + [l for l in links if l not in existing]
-    combined = combined[-keep_last:]
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(
-        json.dumps({"processed": combined}, indent=2), encoding="utf-8"
-    )
+    state["processed"] = combined[-keep_last:]
+    _write_state(state)
