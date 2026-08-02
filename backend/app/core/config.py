@@ -129,10 +129,11 @@ class Settings(BaseSettings):
     # the output frame is decoded and thrown away, costing render time and the
     # peak memory that OOM-killed the container once already.
     SCENE_VIDEO_MIN_HEIGHT: int = Field(default=854, env="SCENE_VIDEO_MIN_HEIGHT")
-    # How many scenes may use video at most. Each open scene clip holds an ffmpeg
-    # decoder for the whole write (~125 MB), so without a cap peak memory grows
-    # with video length and a 60-second render OOM-killed a 512 MB container.
-    SCENE_VIDEO_MAX_CLIPS: int = Field(default=2, env="SCENE_VIDEO_MAX_CLIPS")
+    # How many scenes may use video. Clips go to the OPENING scenes, which is
+    # where they earn their keep — a viewer decides in the first second or two.
+    # Lowered automatically on hosts that cannot hold this many; see
+    # scene_video_max_clips_effective.
+    SCENE_VIDEO_MAX_CLIPS: int = Field(default=4, env="SCENE_VIDEO_MAX_CLIPS")
 
     @property
     def container_memory_limit_mb(self) -> Optional[int]:
@@ -160,6 +161,40 @@ class Settings(BaseSettings):
                 return None
             return value // (1024 * 1024)
         return None
+
+    @property
+    def scene_video_max_clips_effective(self) -> int:
+        """
+        How many scenes may use video, given what this host can actually hold.
+
+        Each open scene clip keeps an ffmpeg decoder alive for the whole write —
+        roughly 125 MB measured — on top of a ~380 MB still-image baseline. So the
+        ceiling is arithmetic, not preference: a 1 GB container (which reports
+        about 953 MB of cgroup limit) has room for three, not the five that would
+        look best.
+
+        Configure SCENE_VIDEO_MAX_CLIPS for the number you want; this only ever
+        lowers it to what fits.
+        """
+        wanted = max(0, self.SCENE_VIDEO_MAX_CLIPS)
+        limit = self.container_memory_limit_mb
+        if limit is None or not self.SCENE_VIDEO_MEMORY_GATE:
+            return wanted
+        # Leave 20% headroom over the projected peak: the render is not the only
+        # thing in the container, and being killed costs the whole video.
+        affordable = int((limit * 0.8 - self.SCENE_VIDEO_BASELINE_MB) // self.SCENE_VIDEO_CLIP_COST_MB)
+        return max(0, min(wanted, affordable))
+
+    # Calibrated against real 60-second renders rather than estimated: 383 MB on
+    # stills only, 654 MB with two clips, 793 MB with three. That is ~137 MB per
+    # clip on a ~385 MB baseline, consistent across both measurements.
+    SCENE_VIDEO_BASELINE_MB: int = Field(default=390, env="SCENE_VIDEO_BASELINE_MB")
+    SCENE_VIDEO_CLIP_COST_MB: int = Field(default=140, env="SCENE_VIDEO_CLIP_COST_MB")
+    # Set false to use SCENE_VIDEO_MAX_CLIPS verbatim and skip the memory check.
+    # The gate is a floor under a real failure mode, not a preference — a render
+    # that gets OOM-killed produces no video at all — but the call is yours to
+    # make if you would rather have the extra clip and accept the risk.
+    SCENE_VIDEO_MEMORY_GATE: bool = Field(default=True, env="SCENE_VIDEO_MEMORY_GATE")
 
     @property
     def scene_video_clips_effective(self) -> bool:

@@ -654,34 +654,6 @@ def main_generate_images(
             image_bytes = None
             used = None
 
-            # Motion first, when it is genuinely about the story. search_stock_video
-            # returns nothing rather than something loose, so this silently
-            # degrades to the still search on every scene it cannot serve.
-            with used_lock:
-                clips_left = video_max_clips - clips_claimed["n"]
-            if video_clips and clips_left > 0 and provider in ("auto", "genblaze", "pexels"):
-                with used_lock:
-                    snapshot = set(used_photo_ids)
-                clip_bytes, clip_id = search_stock_video(
-                    prompt, pexels_api_key, aspect_ratio,
-                    exclude_ids=snapshot, min_height=video_min_height,
-                )
-                if clip_bytes:
-                    clip_target = target.with_suffix(".mp4")
-                    if save_image(clip_bytes, clip_target):
-                        with used_lock:
-                            # Re-check under the lock: several scenes race here,
-                            # and without it the cap could be exceeded.
-                            if clips_claimed["n"] >= video_max_clips:
-                                clip_target.unlink(missing_ok=True)
-                                clip_bytes = None
-                            else:
-                                clips_claimed["n"] += 1
-                                used_photo_ids.add(clip_id)
-                        if clip_bytes:
-                            sources[str(idx)] = "pexels-video"
-                            return True
-
             # Stock photography first (primary source), then Gemini generation
             # as the fallback. "genblaze" mode reaches here only for scenes
             # Genblaze could not produce, so it gets the same safety net.
@@ -720,6 +692,42 @@ def main_generate_images(
             print(f"Error processing scene {idx}: {e}")
             return False
 
+    # --- Pass 2a: motion, for the OPENING scenes only ---------------------
+    #
+    # Sequential and in scene order, unlike the still pass below. Two reasons:
+    #
+    #  * Placement. A viewer decides within a second or two whether to keep
+    #    watching, so the moving footage has to be at the front. Claiming clips
+    #    from a thread pool put them wherever a worker happened to finish, which
+    #    routinely left the opening on a static photograph and the motion buried
+    #    at 0:40 where it changes nothing.
+    #  * The cap. One counter with no lock contention, and no downloading a clip
+    #    only to delete it because another thread took the last slot.
+    #
+    # The window stops a few scenes in: past that a clip is no longer "the
+    # opening", and the memory it costs is better spent not being spent.
+    if video_clips and provider in ("auto", "genblaze", "pexels"):
+        window = min(len(scenes), video_max_clips + 2)
+        for idx in range(window):
+            if clips_claimed["n"] >= video_max_clips:
+                break
+            prompt = prompts[idx]
+            target = targets[idx]
+            if not prompt or target.exists() or target.with_suffix(".mp4").exists():
+                continue
+            clip_bytes, clip_id = search_stock_video(
+                prompt, pexels_api_key, aspect_ratio,
+                exclude_ids=used_photo_ids, min_height=video_min_height,
+            )
+            if not clip_bytes:
+                continue
+            if save_image(clip_bytes, target.with_suffix(".mp4")):
+                clips_claimed["n"] += 1
+                used_photo_ids.add(clip_id)
+                sources[str(idx)] = "pexels-video"
+        print(f"Motion scenes: {clips_claimed['n']} of the first {window} (cap {video_max_clips}).")
+
+    # --- Pass 2b: stills for everything still missing ---------------------
     # Fetch remaining scenes CONCURRENTLY (Pexels is a plain HTTP GET, so a
     # sequential loop with sleeps was the bottleneck). Bounded pool keeps the
     # Gemini image fallback from hammering the API.
