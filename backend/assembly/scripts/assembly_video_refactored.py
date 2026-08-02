@@ -6,6 +6,8 @@ All paths are passed as parameters - no hardcoded paths
 import os
 import json
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import List, Optional
 from moviepy import (ImageClip, VideoFileClip, concatenate_videoclips, AudioFileClip,
@@ -64,32 +66,79 @@ def make_subtitle_clip(text: str, font_path):
     )
 
 
-def build_scene_clip(path: Path, duration: float):
+def _prepare_scene_video(path: Path, duration: float, fps: int) -> Optional[Path]:
+    """
+    Transcode a stock clip to exactly the output frame, length and rate, once.
+
+    Every scene clip stays open for the whole write, and each open clip holds an
+    ffmpeg decoder process alive. Decoding the 1080x1920 stock masters cost about
+    155 MB per scene in those child processes — two scenes were enough to
+    OOM-kill a 512 MB container, and a 60-second video has more.
+
+    Doing the work here instead means exactly one ffmpeg runs at a time, and what
+    stays open afterwards is a small 480x854 file. Nothing is lost: the frame was
+    going to be cropped to that size anyway, and `-stream_loop` handles both ends
+    of the length mismatch (stock clips run 5-20s; a narration segment can run
+    longer, and a clip that simply ended would freeze or go black).
+
+    Returns the prepared path, or None to let the caller fall back.
+    """
+    try:
+        import imageio_ffmpeg
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as e:  # noqa: BLE001
+        print(f"ffmpeg unavailable for scene preparation ({e}).")
+        return None
+
+    # Deliberately NOT beside the scene files. get_files() collects *.mp4 from
+    # that directory as scenes, so an intermediate left there would be picked up
+    # as an extra scene on any later pass and shift every scene out of step with
+    # its narration segment.
+    out = Path(tempfile.gettempdir()) / f"flux_scene_{os.getpid()}_{path.stem}_fit.mp4"
+    cmd = [
+        ffmpeg, "-y", "-loglevel", "error",
+        "-stream_loop", "-1", "-i", str(path),
+        "-t", f"{duration:.3f}", "-an",
+        "-vf", (f"scale=w={TARGET_W}:h={TARGET_H}:force_original_aspect_ratio=increase,"
+                f"crop={TARGET_W}:{TARGET_H}"),
+        "-r", str(fps), "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        if out.exists() and out.stat().st_size > 0:
+            return out
+        print(f"Scene preparation produced nothing for {path.name}.")
+    except Exception as e:  # noqa: BLE001 - the caller falls back to a frame
+        detail = getattr(e, "stderr", b"") or b""
+        print(f"Could not prepare scene video {path.name}: {e} {detail[:200]!r}")
+    return None
+
+
+def build_scene_clip(path: Path, duration: float, fps: int = 24):
     """
     Turn one scene asset into a clip of exactly `duration`.
 
-    Stills become a held frame. Video clips are trimmed when they are longer
-    than the narration and LOOPED when shorter — stock clips run 5-20s while a
-    narration segment can run longer, and a clip that simply ended would leave
-    the frame frozen or black for the remainder. Their own audio is dropped:
-    the narration is the only sound track.
+    Stills become a held frame. Video clips are normalised to the output frame
+    first (see _prepare_scene_video), so what MoviePy holds open is small.
 
-    Falls back to a still frame if the video cannot be opened, so one unplayable
+    Falls back to a single frame, then to a placeholder, so one unplayable
     download cannot take down the render.
     """
     if path.suffix.lower() == ".mp4":
-        try:
-            clip = VideoFileClip(str(path), audio=False)
-            if clip.duration >= duration:
-                return clip.subclipped(0, duration)
-            return clip.with_effects([vfx.Loop(duration=duration)])
-        except Exception as e:  # noqa: BLE001 - a still is better than no scene
-            print(f"Could not open scene video {path.name} ({e}); using a frame instead.")
+        prepared = _prepare_scene_video(path, duration, fps)
+        if prepared is not None:
             try:
-                return VideoFileClip(str(path), audio=False).to_ImageClip(0).with_duration(duration)
-            except Exception:  # noqa: BLE001
-                # create_placeholder_image writes a file and returns its path.
-                return ImageClip(str(create_placeholder_image(text="Scene unavailable"))).with_duration(duration)
+                return VideoFileClip(str(prepared), audio=False)
+            except Exception as e:  # noqa: BLE001
+                print(f"Could not open prepared scene {prepared.name} ({e}).")
+        try:
+            # Last resort: a single frame out of the clip. Still better than
+            # dropping the scene.
+            return VideoFileClip(str(path), audio=False).to_ImageClip(0).with_duration(duration)
+        except Exception:  # noqa: BLE001
+            # create_placeholder_image writes a file and returns its path.
+            return ImageClip(str(create_placeholder_image(text="Scene unavailable"))).with_duration(duration)
     return ImageClip(str(path)).with_duration(duration)
 
 
@@ -416,7 +465,7 @@ def create_video(
     # Create video clips with audio
     for img, audio in zip(images, audio_files):
         audio_clip = AudioFileClip(str(audio))
-        scene_clip = build_scene_clip(Path(img), audio_clip.duration)
+        scene_clip = build_scene_clip(Path(img), audio_clip.duration, fps)
         # Fit each scene to the vertical 9:16 frame (cover + center-crop)
         scene_clip = fit_to_frame(scene_clip).with_audio(audio_clip)
         audio_durations.append(audio_clip.duration)
@@ -487,6 +536,13 @@ def create_video(
         )
         print(f"Video created successfully: {output_file}")
     finally:
+        # Drop the normalised scene intermediates; they are pure scratch and each
+        # one is megabytes.
+        for scratch in Path(tempfile.gettempdir()).glob(f"flux_scene_{os.getpid()}_*_fit.mp4"):
+            try:
+                scratch.unlink()
+            except OSError:
+                pass
         # Release decoders/encoders and audio handles to free memory promptly.
         for clip in raw_clips:
             try:

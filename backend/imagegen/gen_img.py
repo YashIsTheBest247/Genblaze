@@ -533,6 +533,7 @@ def main_generate_images(
     aspect_ratio: str = "9:16",
     video_clips: bool = False,
     video_min_height: int = 854,
+    video_max_clips: int = 2,
     image_provider: str = "auto",
     genblaze_generator: Optional[Callable[[List[str], List[Path], str], Sequence[Optional[Path]]]] = None,
     source_log: Optional[dict] = None,
@@ -564,6 +565,11 @@ def main_generate_images(
         video_min_height: smallest clip rendition to accept, in pixels. The
             source masters are 4K; capping this keeps render time and peak
             memory near the still-image baseline.
+        video_max_clips: how many scenes may use video at most. Every scene clip
+            holds an ffmpeg decoder open for the whole write — roughly 125 MB
+            each — so an unbounded count made peak memory a function of video
+            length, and a 60-second render OOM-killed the container. Scenes past
+            the cap use stills, which cost almost nothing.
         source_log: optional dict mutated with which source served each scene —
             the render's provenance record reads this back.
 
@@ -630,6 +636,7 @@ def main_generate_images(
     # prompts produced the identical frame twice in one video.
     used_photo_ids: set = set()
     used_lock = threading.Lock()
+    clips_claimed = {"n": 0}
 
     def _source_one(idx: int) -> bool:
         target = targets[idx]
@@ -650,7 +657,9 @@ def main_generate_images(
             # Motion first, when it is genuinely about the story. search_stock_video
             # returns nothing rather than something loose, so this silently
             # degrades to the still search on every scene it cannot serve.
-            if video_clips and provider in ("auto", "genblaze", "pexels"):
+            with used_lock:
+                clips_left = video_max_clips - clips_claimed["n"]
+            if video_clips and clips_left > 0 and provider in ("auto", "genblaze", "pexels"):
                 with used_lock:
                     snapshot = set(used_photo_ids)
                 clip_bytes, clip_id = search_stock_video(
@@ -661,9 +670,17 @@ def main_generate_images(
                     clip_target = target.with_suffix(".mp4")
                     if save_image(clip_bytes, clip_target):
                         with used_lock:
-                            used_photo_ids.add(clip_id)
-                        sources[str(idx)] = "pexels-video"
-                        return True
+                            # Re-check under the lock: several scenes race here,
+                            # and without it the cap could be exceeded.
+                            if clips_claimed["n"] >= video_max_clips:
+                                clip_target.unlink(missing_ok=True)
+                                clip_bytes = None
+                            else:
+                                clips_claimed["n"] += 1
+                                used_photo_ids.add(clip_id)
+                        if clip_bytes:
+                            sources[str(idx)] = "pexels-video"
+                            return True
 
             # Stock photography first (primary source), then Gemini generation
             # as the fallback. "genblaze" mode reaches here only for scenes

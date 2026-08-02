@@ -105,6 +105,8 @@ class GenblazeService:
             "image_model": settings.GENBLAZE_IMAGE_MODEL if self._image_provider_name() else None,
             # Human-readable description of the actual visual cascade in effect.
             "visual_flow": self._visual_flow(),
+            "scene_video_clips": settings.scene_video_clips_effective,
+            "container_memory_mb": settings.container_memory_limit_mb,
             "tts_provider": self._narration_backend(),
             "tts_model": settings.GENBLAZE_TTS_MODEL if self._use_genblaze_tts() else None,
             "narration_flow": self._narration_flow(),

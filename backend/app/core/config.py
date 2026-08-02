@@ -129,6 +129,60 @@ class Settings(BaseSettings):
     # the output frame is decoded and thrown away, costing render time and the
     # peak memory that OOM-killed the container once already.
     SCENE_VIDEO_MIN_HEIGHT: int = Field(default=854, env="SCENE_VIDEO_MIN_HEIGHT")
+    # How many scenes may use video at most. Each open scene clip holds an ffmpeg
+    # decoder for the whole write (~125 MB), so without a cap peak memory grows
+    # with video length and a 60-second render OOM-killed a 512 MB container.
+    SCENE_VIDEO_MAX_CLIPS: int = Field(default=2, env="SCENE_VIDEO_MAX_CLIPS")
+
+    @property
+    def container_memory_limit_mb(self) -> Optional[int]:
+        """
+        The container's memory ceiling in MB, or None when unlimited/unknown.
+
+        Read from the cgroup rather than from total system memory: a container is
+        capped well below the host's RAM, and it is the cap that the OOM killer
+        enforces. Both cgroup versions are checked because hosts differ.
+        """
+        for path in ("/sys/fs/cgroup/memory.max",                    # cgroup v2
+                     "/sys/fs/cgroup/memory/memory.limit_in_bytes"):  # cgroup v1
+            try:
+                raw = Path(path).read_text().strip()
+            except OSError:
+                continue
+            if raw == "max":
+                return None
+            try:
+                value = int(raw)
+            except ValueError:
+                continue
+            # v1 reports a sentinel near 2^63 when there is no limit.
+            if value <= 0 or value > (1 << 60):
+                return None
+            return value // (1024 * 1024)
+        return None
+
+    @property
+    def scene_video_clips_effective(self) -> bool:
+        """
+        Whether scene video clips are actually used on this host.
+
+        Each open scene clip holds an ffmpeg decoder for the whole write. Measured
+        peaks: 383 MB for a 30-second render on stills, 504 MB with one clip,
+        654 MB for 60 seconds with two. On a 512 MB container that is the
+        difference between a finished video and an OOM kill — and a killed render
+        produces nothing at all, which is strictly worse than a still image.
+
+        So the setting is honoured wherever there is room for it, and overridden
+        only where the container demonstrably cannot hold it.
+        """
+        if not self.SCENE_VIDEO_CLIPS:
+            return False
+        limit = self.container_memory_limit_mb
+        return limit is None or limit >= self.SCENE_VIDEO_MIN_MEMORY_MB
+
+    # Memory below which scene clips are turned off automatically. 1 GB leaves
+    # room for the ~654 MB peak plus the web process and a safety margin.
+    SCENE_VIDEO_MIN_MEMORY_MB: int = Field(default=1024, env="SCENE_VIDEO_MIN_MEMORY_MB")
 
     @property
     def image_aspect_ratio_effective(self) -> str:
