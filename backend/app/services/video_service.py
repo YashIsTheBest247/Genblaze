@@ -272,6 +272,7 @@ class VideoGenerationService:
                 unsplash_api_key=settings.UNSPLASH_ACCESS_KEY,
                 video_clips=settings.scene_video_clips_effective,
                 video_min_height=settings.SCENE_VIDEO_MIN_HEIGHT,
+                video_strict_place=settings.SCENE_VIDEO_STRICT_PLACE,
                 video_max_clips=settings.scene_video_max_clips_effective,
                 gemini_model=settings.IMAGE_GEN_MODEL,
                 aspect_ratio=settings.image_aspect_ratio_effective,

@@ -201,6 +201,38 @@ def _identifying_terms(query: str) -> List[str]:
     ]
 
 
+# Words that describe framing rather than subject. A clip matching only these
+# has told you nothing: "modern french architecture building exterior" shares
+# "building" and "exterior" with a prompt about the Bombay Stock Exchange and is
+# still a building in France.
+_SCENERY = {
+    "building", "buildings", "exterior", "interior", "close", "view", "shot",
+    "scene", "background", "modern", "aerial", "footage", "closeup", "wide",
+}
+
+
+# Places that show up in stock-footage slugs. A clip naming one of these when the
+# prompt does not is footage of somewhere else — which the relaxed tier would
+# otherwise wave through: "the british flag waving at the new york stock
+# exchange" matched "stock" and "exchange" and opened a video about the Sensex.
+_PLACES = {
+    "american", "america", "usa", "york", "british", "britain", "england",
+    "london", "french", "france", "paris", "german", "germany", "berlin",
+    "chinese", "china", "beijing", "shanghai", "japan", "japanese", "tokyo",
+    "russia", "russian", "moscow", "italy", "italian", "rome", "spain",
+    "spanish", "brazil", "brazilian", "mexico", "mexican", "canada",
+    "canadian", "australia", "australian", "dubai", "singapore", "european",
+    "europe", "african", "korea", "korean", "turkish", "turkey", "argentine",
+    "philippine", "peso", "dollar", "euro", "pound",
+}
+
+
+def _place_conflict(query: str, slug_words: List[str]) -> bool:
+    """True when the clip names a place or currency the prompt never mentioned."""
+    asked = _query_terms(query)
+    return any(w in _PLACES and w not in asked for w in slug_words)
+
+
 def _term_in(term: str, words: List[str]) -> bool:
     """
     Whether `term` appears in `words`, allowing for inflection.
@@ -288,6 +320,8 @@ def search_stock_video(
     aspect_ratio: str = "9:16",
     exclude_ids: Optional[set] = None,
     min_height: int = 854,
+    relax: bool = False,
+    strict_place: bool = True,
 ) -> Tuple[Optional[bytes], Optional[str]]:
     """
     Find an on-topic stock video clip for `query` and return (bytes, clip_id).
@@ -318,15 +352,34 @@ def search_stock_video(
     # fraction of the size of the photo one, so a loose match there is far more
     # likely to be the wrong country entirely.
     required = _identifying_terms(query)
+    # `relax` is used for the opening scenes only, and only after the strict pass
+    # has found nothing. It asks for a clip that is about the right SUBJECT rather
+    # than the right place: at least one content word that is not mere framing.
+    #
+    # This is not a loosening of standards so much as consistency with the photo
+    # path, which already answers "Bombay Stock Exchange building exterior" with a
+    # New York Stock Exchange facade. Refusing the equivalent clip bought nothing
+    # — the same wrong-city subject, just static and less watchable.
+    subject_terms = [t for t in _query_terms(query) if t not in _SCENERY]
     pool = []
     for c in candidates:
         if c["id"] in used:
             continue
         slug_words = re.findall(r"[a-z']+", (c.get("text") or "").lower())
-        missing = [t for t in required if not _term_in(t, slug_words)]
-        if missing:
-            print(f"  skipped clip {c['text'][:44]!r}: missing {missing}")
-            continue
+        if relax:
+            if not any(_term_in(t, slug_words) for t in subject_terms):
+                continue
+            # Right kind of thing, wrong country. Skip rather than open an
+            # Indian markets video on the New York Stock Exchange; the next
+            # scene in the window can still carry the motion.
+            if strict_place and _place_conflict(query, slug_words):
+                print(f"  skipped clip {c['text'][:44]!r}: names another place")
+                continue
+        else:
+            missing = [t for t in required if not _term_in(t, slug_words)]
+            if missing:
+                print(f"  skipped clip {c['text'][:44]!r}: missing {missing}")
+                continue
         pool.append(c)
 
     scored = [(max(_relevance(query, c), _relevance(trimmed, c)), c) for c in pool]
@@ -338,7 +391,8 @@ def search_stock_video(
         try:
             r = requests.get(cand["url"], timeout=60)
             r.raise_for_status()
-            print(f"  pexels-video match ({score}): {cand['text'][:60]!r} [{cand['duration']}s]")
+            tier = "relaxed" if relax else "exact"
+            print(f"  pexels-video match ({tier}, {score}): {cand['text'][:56]!r} [{cand['duration']}s]")
             return r.content, cand["id"]
         except Exception as e:  # noqa: BLE001 - try the next clip
             print(f"Pexels video download failed ({cand['id']}): {e}")
@@ -533,6 +587,7 @@ def main_generate_images(
     aspect_ratio: str = "9:16",
     video_clips: bool = False,
     video_min_height: int = 854,
+    video_strict_place: bool = True,
     video_max_clips: int = 2,
     image_provider: str = "auto",
     genblaze_generator: Optional[Callable[[List[str], List[Path], str], Sequence[Optional[Path]]]] = None,
@@ -715,10 +770,21 @@ def main_generate_images(
             target = targets[idx]
             if not prompt or target.exists() or target.with_suffix(".mp4").exists():
                 continue
+            # Exact first, then relaxed, per scene. Ordering it this way — rather
+            # than exact across every scene and only then relaxed — is what keeps
+            # motion at the FRONT: a relaxed match on scene 0 beats an exact one
+            # on scene 3, because scene 3 is past the point where the viewer has
+            # already decided.
             clip_bytes, clip_id = search_stock_video(
                 prompt, pexels_api_key, aspect_ratio,
                 exclude_ids=used_photo_ids, min_height=video_min_height,
             )
+            if not clip_bytes:
+                clip_bytes, clip_id = search_stock_video(
+                    prompt, pexels_api_key, aspect_ratio,
+                    exclude_ids=used_photo_ids, min_height=video_min_height,
+                    relax=True, strict_place=video_strict_place,
+                )
             if not clip_bytes:
                 continue
             if save_image(clip_bytes, target.with_suffix(".mp4")):
