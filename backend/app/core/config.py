@@ -129,12 +129,12 @@ class Settings(BaseSettings):
     # the output frame is decoded and thrown away, costing render time and the
     # peak memory that OOM-killed the container once already.
     SCENE_VIDEO_MIN_HEIGHT: int = Field(default=854, env="SCENE_VIDEO_MIN_HEIGHT")
-    # Reject opening-scene clips that name a country or currency the prompt never
-    # mentioned. On by default: without it a story about the Sensex opened on the
-    # New York Stock Exchange with a British flag flying, because the clip matched
-    # "stock" and "exchange". Set false to accept those and guarantee motion on
-    # the very first scene, at the cost of occasionally wrong-country footage.
-    SCENE_VIDEO_STRICT_PLACE: bool = Field(default=True, env="SCENE_VIDEO_STRICT_PLACE")
+    # Whether an opening clip naming another country is DROPPED (true) or merely
+    # ranked last (false, the default). Dropping forfeited the slot and put a
+    # still on scene 0, defeating the point of clips at the front. Ranking means
+    # a correct-place clip always wins when one exists, and a wrong-place one is
+    # used only when the alternative is no motion at all.
+    SCENE_VIDEO_STRICT_PLACE: bool = Field(default=False, env="SCENE_VIDEO_STRICT_PLACE")
     # How many scenes may use video. Clips go to the OPENING scenes, which is
     # where they earn their keep — a viewer decides in the first second or two.
     # Lowered automatically on hosts that cannot hold this many; see

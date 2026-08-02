@@ -369,12 +369,16 @@ def search_stock_video(
         if relax:
             if not any(_term_in(t, slug_words) for t in subject_terms):
                 continue
-            # Right kind of thing, wrong country. Skip rather than open an
-            # Indian markets video on the New York Stock Exchange; the next
-            # scene in the window can still carry the motion.
-            if strict_place and _place_conflict(query, slug_words):
+            # Right kind of thing, possibly wrong country. Ranked last rather
+            # than discarded: rejecting outright forfeited the slot, which put a
+            # still on the opening scene — the one place motion actually changes
+            # whether a viewer stays. A correct-place clip still always wins when
+            # one exists. SCENE_VIDEO_STRICT_PLACE=true drops these instead.
+            conflicted = _place_conflict(query, slug_words)
+            if conflicted and strict_place:
                 print(f"  skipped clip {c['text'][:44]!r}: names another place")
                 continue
+            c["_place_conflict"] = conflicted
         else:
             missing = [t for t in required if not _term_in(t, slug_words)]
             if missing:
@@ -386,7 +390,8 @@ def search_stock_video(
     if not scored:
         return None, None
 
-    scored.sort(key=lambda pair: -pair[0])
+    # Clean matches first, then by how much of the query they echo.
+    scored.sort(key=lambda pair: (pair[1].get("_place_conflict", False), -pair[0]))
     for score, cand in scored:
         try:
             r = requests.get(cand["url"], timeout=60)
@@ -695,9 +700,11 @@ def main_generate_images(
 
     def _source_one(idx: int) -> bool:
         target = targets[idx]
-        for produced in (target, target.with_suffix(".mp4")):
-            if produced.exists() and produced.stat().st_size > 0:
-                return True  # already produced by an earlier pass
+        if target.exists() and target.stat().st_size > 0:
+            return True  # already produced by an earlier pass
+        # A scene that already has a .mp4 is deliberately NOT skipped: the clip
+        # plays once and the photograph holds the rest of the segment, so a clip
+        # scene needs both files.
 
         prompt = prompts[idx]
         if not prompt:

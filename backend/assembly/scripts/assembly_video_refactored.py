@@ -77,9 +77,13 @@ def _prepare_scene_video(path: Path, duration: float, fps: int) -> Optional[Path
 
     Doing the work here instead means exactly one ffmpeg runs at a time, and what
     stays open afterwards is a small 480x854 file. Nothing is lost: the frame was
-    going to be cropped to that size anyway, and `-stream_loop` handles both ends
-    of the length mismatch (stock clips run 5-20s; a narration segment can run
-    longer, and a clip that simply ended would freeze or go black).
+    going to be cropped to that size anyway.
+
+    The clip is NOT looped. A stock clip runs 5-20 seconds and a narration
+    segment often runs longer; replaying the same three seconds on a loop reads
+    as a stutter and draws attention to the fact that the footage is generic.
+    Whatever length comes back is what the caller gets, and it fills the
+    remainder with the scene's photograph instead.
 
     Returns the prepared path, or None to let the caller fall back.
     """
@@ -97,7 +101,8 @@ def _prepare_scene_video(path: Path, duration: float, fps: int) -> Optional[Path
     out = Path(tempfile.gettempdir()) / f"flux_scene_{os.getpid()}_{path.stem}_fit.mp4"
     cmd = [
         ffmpeg, "-y", "-loglevel", "error",
-        "-stream_loop", "-1", "-i", str(path),
+        "-i", str(path),
+        # Trim to the segment, but never pad: a shorter clip stays shorter.
         "-t", f"{duration:.3f}", "-an",
         "-vf", (f"scale=w={TARGET_W}:h={TARGET_H}:force_original_aspect_ratio=increase,"
                 f"crop={TARGET_W}:{TARGET_H}"),
@@ -115,31 +120,48 @@ def _prepare_scene_video(path: Path, duration: float, fps: int) -> Optional[Path
     return None
 
 
-def build_scene_clip(path: Path, duration: float, fps: int = 24):
+def build_scene_clip(video: Optional[Path], image: Optional[Path],
+                     duration: float, fps: int = 24):
     """
-    Turn one scene asset into a clip of exactly `duration`.
+    Turn one scene's assets into a clip of exactly `duration`.
 
-    Stills become a held frame. Video clips are normalised to the output frame
-    first (see _prepare_scene_video), so what MoviePy holds open is small.
+    A scene may carry footage, a photograph, or both. When it has footage the
+    clip plays ONCE, at its natural length, and the scene's photograph holds the
+    rest of the segment. Looping the footage instead was worse in both
+    directions: a three-second clip stretched over a twelve-second segment
+    replayed four times, which reads as a stutter and advertises that the shot is
+    filler.
 
-    Falls back to a single frame, then to a placeholder, so one unplayable
-    download cannot take down the render.
+    Falls back through: prepared clip → clip's own last frame → photograph →
+    placeholder, so one unplayable download cannot take the render down.
     """
-    if path.suffix.lower() == ".mp4":
-        prepared = _prepare_scene_video(path, duration, fps)
+    parts = []
+    if video is not None:
+        prepared = _prepare_scene_video(video, duration, fps)
         if prepared is not None:
             try:
-                return VideoFileClip(str(prepared), audio=False)
+                parts.append(VideoFileClip(str(prepared), audio=False))
             except Exception as e:  # noqa: BLE001
                 print(f"Could not open prepared scene {prepared.name} ({e}).")
-        try:
-            # Last resort: a single frame out of the clip. Still better than
-            # dropping the scene.
-            return VideoFileClip(str(path), audio=False).to_ImageClip(0).with_duration(duration)
-        except Exception:  # noqa: BLE001
-            # create_placeholder_image writes a file and returns its path.
-            return ImageClip(str(create_placeholder_image(text="Scene unavailable"))).with_duration(duration)
-    return ImageClip(str(path)).with_duration(duration)
+
+    played = sum(c.duration for c in parts)
+    remaining = duration - played
+
+    if remaining > 0.05:
+        if image is not None and image.exists():
+            parts.append(fit_to_frame(ImageClip(str(image)).with_duration(remaining)))
+        elif parts:
+            # No photograph for this scene — hold the clip's final frame rather
+            # than cutting to black.
+            tail = parts[-1]
+            parts.append(tail.to_ImageClip(max(0, tail.duration - 0.05)).with_duration(remaining))
+        else:
+            parts.append(ImageClip(str(create_placeholder_image(text="Scene unavailable")))
+                         .with_duration(remaining))
+
+    if len(parts) == 1:
+        return parts[0]
+    return concatenate_videoclips(parts, method="chain")
 
 
 def fit_to_frame(clip, target_w: int = TARGET_W, target_h: int = TARGET_H):
@@ -215,6 +237,40 @@ def get_files(folder: Path, extensions: tuple) -> List[Path]:
             return float('inf')  # Put files without numbers at the end
     
     return sorted(files, key=extract_number)
+
+
+def pair_scene_assets(folder: Path) -> List[tuple]:
+    """
+    Group a scene directory into (video, image) pairs, ordered by scene.
+
+    Files are named `scene_<timestamp>.mp4` / `.jpg`, so the stem identifies the
+    scene and the suffix says which role the file plays. A scene may have either,
+    or both — both is the interesting case: the clip opens the segment and the
+    photograph holds the remainder.
+    """
+    folder = Path(folder)
+    by_scene: dict = {}
+    for f in folder.iterdir():
+        if not f.is_file():
+            continue
+        suffix = f.suffix.lower()
+        if suffix not in ('.jpg', '.jpeg', '.png', '.mp4'):
+            continue
+        slot = "video" if suffix == '.mp4' else "image"
+        by_scene.setdefault(f.stem, {}).setdefault(slot, f)
+
+    def scene_order(stem: str) -> tuple:
+        # "scene_00-08" -> (0, 8); anything unexpected sorts last but stably.
+        try:
+            parts = stem.split('_', 1)[1].split('-')
+            return (0, int(parts[0]), int(parts[1]) if len(parts) > 1 else 0)
+        except Exception:  # noqa: BLE001
+            return (1, 0, 0)
+
+    return [
+        (assets.get("video"), assets.get("image"))
+        for stem, assets in sorted(by_scene.items(), key=lambda kv: scene_order(kv[0]))
+    ]
 
 
 def extract_topic_from_json(file_path: Path) -> str:
@@ -444,13 +500,14 @@ def create_video(
     if not image_folder or not image_folder.exists() or not list(image_folder.iterdir()):
         print("No images provided, creating placeholder")
         placeholder_image = create_placeholder_image(font_path=font_path, text="No Image Available")
-        images = [placeholder_image] * len(audio_files)
+        scenes_assets = [(None, placeholder_image)] * len(audio_files)
     else:
         check_folder_exists(image_folder)
-        # .mp4 too: a scene is a short stock video clip whenever one was
-        # genuinely on topic, and a still otherwise. Both kinds sort together
-        # by scene number, so the ordering is unaffected.
-        images = get_files(image_folder, ('.jpg', '.png', '.jpeg', '.mp4'))
+        # A scene can now own BOTH a clip and a photo — the clip plays, the
+        # photo fills the rest of the segment. They must therefore be paired by
+        # scene rather than listed flat, or the two files for one scene would
+        # consume two narration segments and shift everything after them.
+        scenes_assets = pair_scene_assets(image_folder)
     
     # Extract subtitles from script
     subtitles = json_extract(script_path)
@@ -463,9 +520,9 @@ def create_video(
     raw_clips.append(intro_clip)
     
     # Create video clips with audio
-    for img, audio in zip(images, audio_files):
+    for (scene_video, scene_image), audio in zip(scenes_assets, audio_files):
         audio_clip = AudioFileClip(str(audio))
-        scene_clip = build_scene_clip(Path(img), audio_clip.duration, fps)
+        scene_clip = build_scene_clip(scene_video, scene_image, audio_clip.duration, fps)
         # Fit each scene to the vertical 9:16 frame (cover + center-crop)
         scene_clip = fit_to_frame(scene_clip).with_audio(audio_clip)
         audio_durations.append(audio_clip.duration)
