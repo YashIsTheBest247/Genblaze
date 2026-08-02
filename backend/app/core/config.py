@@ -180,9 +180,15 @@ class Settings(BaseSettings):
         limit = self.container_memory_limit_mb
         return limit is None or limit >= self.SCENE_VIDEO_MIN_MEMORY_MB
 
-    # Memory below which scene clips are turned off automatically. 1 GB leaves
-    # room for the ~654 MB peak plus the web process and a safety margin.
-    SCENE_VIDEO_MIN_MEMORY_MB: int = Field(default=1024, env="SCENE_VIDEO_MIN_MEMORY_MB")
+    # Memory below which scene clips are turned off automatically.
+    #
+    # 768 rather than 1024: the worst case actually measured — a 60-second render,
+    # seven scenes, the full two-clip cap — peaks at 654 MB, and the cap keeps it
+    # there however long the video gets. A 1 GB container reports about 953 MB of
+    # usable cgroup limit, so a 1024 threshold disabled clips on exactly the boxes
+    # that can run them. The earlier OOM was the uncapped path (seven scenes at
+    # ~155 MB each, ~1.2 GB), not this one.
+    SCENE_VIDEO_MIN_MEMORY_MB: int = Field(default=768, env="SCENE_VIDEO_MIN_MEMORY_MB")
 
     @property
     def image_aspect_ratio_effective(self) -> str:

@@ -126,7 +126,7 @@ export function AutomationSection({ onGenerate, onRunAutomation, isGenerating })
     }
 
     return (
-        <section id="automation" className="mx-auto w-full max-w-[1600px] px-5 py-14 lg:px-8">
+        <section id="automation" className="mx-auto w-full max-w-[1600px] scroll-mt-20 px-5 py-14 lg:px-8">
             <div className="glass rounded-2xl p-6 lg:p-8">
                 {/* header */}
                 <div className="mb-8 flex flex-wrap items-start justify-between gap-4">

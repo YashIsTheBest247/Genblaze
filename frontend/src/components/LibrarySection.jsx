@@ -27,7 +27,7 @@ export function LibrarySection({
     const showAwaiting = isGenerating || isPolling;
 
     return (
-        <section id="library" className="mx-auto w-full max-w-[1600px] px-5 py-14 lg:px-8">
+        <section id="library" className="mx-auto w-full max-w-[1600px] scroll-mt-20 px-5 py-14 lg:px-8">
             <div className="mb-2 flex items-center gap-3">
                 <span className="grid h-8 w-8 place-items-center rounded-lg border border-tint/15 bg-tint/[0.06]">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" className="h-4 w-4" strokeLinecap="round" strokeLinejoin="round">

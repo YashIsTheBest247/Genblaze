@@ -140,7 +140,7 @@ export function PipelineSection({ mode, activeStepKey, statusText }) {
     const dotLeft = ((dotIndex + 0.5) / count) * 100;
 
     return (
-        <section id="pipeline" className="mx-auto max-w-7xl px-4 py-10 sm:px-5 sm:py-12 lg:px-8">
+        <section id="pipeline" className="mx-auto max-w-7xl scroll-mt-20 px-4 py-10 sm:px-5 sm:py-12 lg:px-8">
             <div className="mb-6 flex flex-wrap items-end justify-between gap-3 sm:mb-10 sm:gap-4">
                 <div>
                     <span className="eyebrow">Live render</span>
