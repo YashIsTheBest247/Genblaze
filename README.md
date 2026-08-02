@@ -26,7 +26,7 @@ News in → a verifiable MP4 in object storage, in about two minutes.
 - **Provenance on every render** — a canonical, SHA-256-bound **Genblaze manifest** recording provider, model and parameters for each stage; written to B2 *and* embedded into the MP4 container, so the file carries its own record wherever it goes
 - **Verifiable in the UI** — the library shows a verified shield per video; open **Provenance** to see the generation chain, per-artefact hashes and a live re-verification
 - **Durable media library on Backblaze B2** — MP4, thumbnail, captions, script and manifest all land in the bucket; playback runs off short-lived presigned URLs, so the bucket stays private and the library survives an ephemeral host
-- **Motion where it earns its keep** — the opening scenes use short **stock video clips** rather than stills, because a viewer decides in the first second or two whether to keep watching. A clip is only used when its own description carries every identifying word of the scene prompt, so footage is never of the wrong subject; otherwise the scene falls back to a photograph
+- **Motion where it earns its keep** — the **opening** scenes use short **stock video clips**, because a viewer decides in the first second or two whether to keep watching. Clips are claimed by a sequential pass over the first scenes, so motion lands at the front rather than wherever a worker happened to finish. Each clip plays **once, at its natural length**, and the scene's own photograph holds the rest of the segment — looping a three-second clip across a twelve-second segment replayed it four times, which reads as a stutter and advertises that the shot is filler
 - **Two stock libraries, ranked by relevance** — **Pexels and Unsplash** are searched concurrently and the result whose own caption best matches the prompt wins. Neither API ever returns *nothing* — each returns its loosest match silently — so scoring across two pools is what keeps scenes on topic. Gemini image generation covers what neither library has
 - **Multi-provider generation via Genblaze** — narration through GMI Cloud/ElevenLabs/MiniMax, optional generative visuals; swapping model or provider is one env var
 - **Graceful degradation** — every stage has a fallback (video clip → stock photo → Gemini for visuals; cloud TTS → local Kokoro for narration), and the app boots and reports readiness even with nothing configured
@@ -128,10 +128,15 @@ is exactly what it did, on a story about the rupee. So relevance is decided here
 not delegated:
 
 ```
-1. video clip   Pexels video search. Used ONLY when the clip's slug carries
-                every identifying word of the prompt — "Bombay Stock Exchange"
-                will not accept New York Stock Exchange footage. Limited to the
-                opening scenes, where motion actually affects retention.
+1. video clip   Pexels video search, for the OPENING scenes only. Two tiers,
+                tried per scene in order:
+                  exact   — the clip's slug carries every identifying word of
+                            the prompt (proper nouns included)
+                  relaxed — at least one content word that is not mere framing;
+                            "building" and "exterior" alone do not qualify
+                Exact-then-relaxed *per scene*, not exact across all scenes
+                first: a relaxed match on scene 0 beats an exact one on scene 3,
+                because scene 3 is past the point where the viewer decided.
 2. photo        Pexels and Unsplash searched concurrently; every candidate scored
                 by how much of the prompt its own caption echoes; highest wins.
                 Each provider retries with a shortened query, because Unsplash
@@ -139,6 +144,18 @@ not delegated:
                 prompt every time.
 3. generation   Gemini image generation, for what neither library has.
 ```
+
+A scene that gets a clip **also** gets a photo: the clip plays once and the
+photograph fills the remainder of the narration segment. Assembly therefore pairs
+files by scene stem rather than listing them flat — listed flat, two files for
+one scene would consume two narration segments and desync everything after them.
+
+The relaxed tier can match the right subject in the wrong country: footage of the
+New York Stock Exchange satisfies "stock" and "exchange" for a prompt about the
+Bombay one. Those candidates are **ranked last rather than discarded**, so a
+correct-place clip always wins when one exists and a wrong-place one is used only
+when the alternative is no motion at all. `SCENE_VIDEO_STRICT_PLACE=true` drops
+them instead, at the cost of putting a still back on the opening scene.
 
 Two details worth knowing. Searches use the **output frame's orientation**, not a
 configured one — scene images are cover-cropped to the video anyway, so searching
@@ -150,14 +167,16 @@ Video scenes are bounded by memory rather than preference. Each open clip holds
 an ffmpeg decoder for the whole write — measured at ~137 MB on a ~385 MB
 baseline — so the count is derived from the container's cgroup limit:
 
-| Container | Video scenes | Measured peak |
+| Container | Video scenes | Peak |
 |---|---|---|
-| 512 MB | 0 (stills only) | 383 MB |
-| 1 GB (≈953 MB usable) | 2 | 654 MB |
-| 2 GB and up | 4 | ~950 MB |
+| 512 MB | 0 (stills only) | 383 MB (measured) |
+| 1 GB (≈953 MB usable) | 2 | 654 MB (measured) |
+| 2 GB and up | 4 | ~950 MB (projected) |
 
-Set `SCENE_VIDEO_MEMORY_GATE=false` to use `SCENE_VIDEO_MAX_CLIPS` verbatim and
-skip the check.
+Three clips measures 798 MB — it fits a 1 GB container, but at 84% of the limit,
+and a killed render produces nothing at all. Hence two.
+`SCENE_VIDEO_MEMORY_GATE=false` uses `SCENE_VIDEO_MAX_CLIPS` verbatim and skips
+the check, if you would rather take that risk.
 
 ---
 
@@ -269,6 +288,7 @@ ollama pull llama3.2
 | `SCENE_VIDEO_MAX_CLIPS` | `4` | Ceiling on video scenes — lowered automatically to what the container's memory can hold |
 | `SCENE_VIDEO_MEMORY_GATE` | `true` | Set `false` to use the cap verbatim and skip the memory check |
 | `SCENE_VIDEO_MIN_HEIGHT` | `854` | Smallest clip rendition to download (masters are 4K) |
+| `SCENE_VIDEO_STRICT_PLACE` | `false` | `true` drops opening clips naming another country instead of ranking them last — cleaner, but forfeits the slot and puts a still on scene 0 |
 | `INTRO_SECONDS` / `OUTRO_SECONDS` | `2` / `2` | Bookend lengths |
 | **YouTube** | | |
 | `YOUTUBE_TOKEN_JSON` | — | Token JSON for headless deploys |
@@ -317,7 +337,9 @@ genblaze verify  video.mp4     # check it against the file's bytes
 ## Performance
 
 A short renders in roughly **35 s** (measured, 20 s video, 2 scenes); a 60 s
-video with three video scenes takes about 95 s.
+video with seven scenes, three of them video, takes about **120 s** — each clip
+is transcoded to the output frame once before assembly, which is what keeps peak
+memory flat as the video gets longer.
 
 | Stage | Time | Note |
 |---|---|---|
